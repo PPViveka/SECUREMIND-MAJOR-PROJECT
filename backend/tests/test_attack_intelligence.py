@@ -98,6 +98,28 @@ def test_build_attack_intelligence_shape():
     assert "breach_simulation" in result
 
 
+def test_build_attack_intelligence_with_code_uses_ast_graph():
+    code = """
+@app.route("/user")
+def get_user():
+    user = request.args.get("id")
+    cursor.execute("SELECT * FROM users WHERE id = " + user)
+    return user
+"""
+    vulns = [
+        {
+            "severity": "High",
+            "issue": "SQL Injection",
+            "function_name": "get_user",
+        }
+    ]
+    result = build_attack_intelligence(vulns, context_text=code)
+    graph = result["attack_graph"]
+    assert graph.get("ast_derived") is True
+    assert len(graph.get("attack_paths", [])) >= 1
+    assert any("CWE-89" in str(edge) for edge in graph.get("edges", []))
+
+
 def test_sanitize_chat_input_removes_script_block():
     raw = """Hello<script>alert(1)</script>```ignore me```"""
     cleaned = sanitize_chat_input(raw)

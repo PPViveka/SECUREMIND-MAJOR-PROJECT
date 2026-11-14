@@ -8,6 +8,21 @@ import threading
 from .repo_selective_scan import _clone_repository
 from .job_manager import update_job_progress, append_partial_result, mark_completed, mark_failed
 
+try:
+    from .verified_fixer import (
+        VerifiedFixer,
+        find_project_sanitizer_examples,
+        _gate1_exploit_no_longer_reaches_sink,
+        _gate2_tests_still_pass,
+        _gate3_no_new_sast_findings,
+    )
+except ImportError:
+    VerifiedFixer = None
+    find_project_sanitizer_examples = None
+    _gate1_exploit_no_longer_reaches_sink = None
+    _gate2_tests_still_pass = None
+    _gate3_no_new_sast_findings = None
+
 def _normalize_fix_result(fix_result):
     """Normalize Llama 3 output: it may return a list, a dict, or something else."""
     if isinstance(fix_result, list):
@@ -88,6 +103,22 @@ def _run_repo_autofix(job_id, repo_url, vulnerabilities, token, branch, mode, au
             
             if fix_result and fix_result.get('fixes'):
                 fixes = fix_result['fixes']
+                new_content = fix_result.get('modified_content')
+
+                # Step 5: 3-Gate verification for each applied fix
+                if _gate1_exploit_no_longer_reaches_sink and new_content:
+                    for f_item in fixes:
+                        g1_pass, g1_msg = _gate1_exploit_no_longer_reaches_sink(new_content, f_item)
+                        g2_pass, g2_msg = _gate2_tests_still_pass(new_content, f_item.get('function_name', ''), temp_dir)
+                        g3_pass, g3_msg = _gate3_no_new_sast_findings(new_content, f_item.get('issue', ''))
+                        all_passed = g1_pass and g2_pass and g3_pass
+                        f_item['verification_status'] = "verified" if all_passed else "unverified_draft"
+                        f_item['verification_gates'] = [
+                            {"gate": "exploit_blocked", "passed": g1_pass, "detail": g1_msg},
+                            {"gate": "tests_pass", "passed": g2_pass, "detail": g2_msg},
+                            {"gate": "no_new_sast_findings", "passed": g3_pass, "detail": g3_msg},
+                        ]
+
                 for f_item in fixes:
                     f_item['file_path'] = file_path
                     append_partial_result(job_id, f_item) # Stream partial results immediately
@@ -95,7 +126,6 @@ def _run_repo_autofix(job_id, repo_url, vulnerabilities, token, branch, mode, au
                 all_applied_fixes.extend(fixes)
                 
                 if mode in ['fix', 'pr']:
-                    new_content = fix_result.get('modified_content')
                     if new_content:
                         with open(full_path, 'w') as f:
                             f.write(new_content)
@@ -152,13 +182,41 @@ def _run_snippet_autofix(job_id, snippet, vulnerabilities, language, mode, autof
     diff_str = "".join(diff_lines)
     
     primary_fix = fixes[0] if fixes else {}
+    target_vuln = primary_fix or (vulnerabilities[0] if vulnerabilities else {})
+
+    # Step 5: 3-Gate Verified Fix Loop
+    patch_status = "unverified_draft"
+    gate_details = []
+    if language == 'python' and _gate1_exploit_no_longer_reaches_sink and modified_content and modified_content != snippet:
+        update_job_progress(job_id, "verifying_fix", 88, "Running 3-gate sandbox verification on generated patch...")
+        
+        # Gate 1: Re-run sandbox exploit -> must no longer reach sink
+        g1_pass, g1_msg = _gate1_exploit_no_longer_reaches_sink(modified_content, target_vuln)
+        gate_details.append({"gate": "exploit_blocked", "passed": g1_pass, "detail": g1_msg})
+
+        # Gate 2: Tests pass (skip if snippet has no test dir)
+        g2_pass, g2_msg = _gate2_tests_still_pass(modified_content, target_vuln.get('function_name', ''), None)
+        gate_details.append({"gate": "tests_pass", "passed": g2_pass, "detail": g2_msg})
+
+        # Gate 3: No new SAST findings
+        g3_pass, g3_msg = _gate3_no_new_sast_findings(modified_content, target_vuln.get('issue', ''))
+        gate_details.append({"gate": "no_new_sast_findings", "passed": g3_pass, "detail": g3_msg})
+
+        if g1_pass and g2_pass and g3_pass:
+            patch_status = "verified"
+        else:
+            patch_status = "unverified_draft"
+
+    confidence_label = "Verified Patch" if patch_status == "verified" else "Unverified Draft"
     snippet_result = {
         "file_path": file_path,
         "original_code": snippet,
         "fixed_code": modified_content,
         "diff": diff_str,
         "explanation": "\n".join([f"- {f.get('explanation', '')}" for f in fixes]),
-        "confidence": primary_fix.get('confidence', 'High')
+        "confidence": confidence_label,
+        "patch_status": patch_status,
+        "verification_gates": gate_details,
     }
     
     append_partial_result(job_id, snippet_result)
@@ -208,9 +266,10 @@ def _create_github_pr(repo_dir, repo_url, token, modified_files, fixes):
         "Accept": "application/vnd.github.v3+json"
     }
     
-    pr_body = "### 🛡️ SageArmor Security Auto-Remediation\n\nThis PR contains automated security fixes generated by SageArmor AI.\n\n"
+    pr_body = "### 🛡️ SageArmor Security Auto-Remediation\n\nThis PR contains automated security fixes generated and verified by SageArmor.\n\n"
     for fix in fixes:
-        pr_body += f"- **{fix['issue']}** in `{fix['file_path']}`: {fix['explanation']}\n"
+        status_badge = "🛡️ [Verified Patch]" if fix.get('verification_status') == 'verified' else "⚠️ [Unverified Draft]"
+        pr_body += f"- {status_badge} **{fix.get('issue', 'Security Fix')}** in `{fix.get('file_path')}`: {fix.get('explanation', '')}\n"
         
     payload = {
         "title": "🔒 Security Fixes: SageArmor Auto-Remediation",

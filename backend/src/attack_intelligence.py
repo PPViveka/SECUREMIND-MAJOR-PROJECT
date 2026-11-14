@@ -2,6 +2,12 @@ import json
 import re
 from typing import Any, Dict, List, Tuple
 
+try:
+    from .code_graph import build_code_graph, merge_with_heuristic_graph
+except ImportError:
+    build_code_graph = None
+    merge_with_heuristic_graph = None
+
 
 SEVERITY_WEIGHTS = {
     "critical": 10,
@@ -285,7 +291,16 @@ def simulate_breach(risk_ranking: List[Dict[str, Any]], attack_graph: Dict[str, 
 
 def build_attack_intelligence(vulnerabilities: List[Dict[str, Any]], context_text: str = "") -> Dict[str, Any]:
     risk_ranking = build_risk_ranking(vulnerabilities, context_text)
-    attack_graph = generate_attack_graph(risk_ranking)
+    heuristic_graph = generate_attack_graph(risk_ranking)
+
+    # Step 4: Use AST-derived attack graph when Python code context is provided
+    if build_code_graph and merge_with_heuristic_graph and context_text and any(kw in context_text for kw in ("def ", "@app", "import ", "class ")):
+        vuln_names = [v.get("function_name", "") for v in vulnerabilities if v.get("function_name")]
+        ast_graph = build_code_graph(context_text, vuln_function_names=vuln_names or None, findings=vulnerabilities)
+        attack_graph = merge_with_heuristic_graph(ast_graph, heuristic_graph)
+    else:
+        attack_graph = heuristic_graph
+
     simulation = simulate_breach(risk_ranking, attack_graph)
 
     return {
@@ -296,6 +311,7 @@ def build_attack_intelligence(vulnerabilities: List[Dict[str, Any]], context_tex
             "exploitable_count": sum(1 for r in risk_ranking if r.get("exploitability", {}).get("exploitable")),
             "top_priority_score": risk_ranking[0]["priority_score"] if risk_ranking else 0,
             "attack_path_count": len(attack_graph.get("attack_paths", [])),
+            "ast_derived": attack_graph.get("ast_derived", False),
         },
     }
 
