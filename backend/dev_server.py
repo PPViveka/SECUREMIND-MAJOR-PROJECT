@@ -1,7 +1,15 @@
 import json
 import os
+import sys
+
+# Ensure backend root is on sys.path
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
 from flask import Flask, request, Response
-from flask_cors import CORS
+try:
+    from flask_cors import CORS
+except ImportError:
+    CORS = None
 from dotenv import load_dotenv
 
 # Import handlers directly
@@ -21,7 +29,24 @@ from src.handler import (
 load_dotenv()
 app = Flask(__name__)
 # Enable CORS for all routes to match serverless-offline behavior
-CORS(app)
+if CORS:
+    CORS(app)
+else:
+    @app.before_request
+    def handle_options():
+        if request.method == 'OPTIONS':
+            res = Response()
+            res.headers['Access-Control-Allow-Origin'] = '*'
+            res.headers['Access-Control-Allow-Headers'] = '*'
+            res.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS, PUT, DELETE'
+            return res
+
+    @app.after_request
+    def add_cors_headers(response):
+        response.headers['Access-Control-Allow-Origin'] = '*'
+        response.headers['Access-Control-Allow-Headers'] = '*'
+        response.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS, PUT, DELETE'
+        return response
 
 def lambda_bridge(handler_fn, request):
     """
