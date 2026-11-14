@@ -74,6 +74,14 @@
       {
         "command": "sageArmor.previewFix",
         "title": "Sage Armor: Preview Fix"
+      },
+      {
+        "command": "sageArmor.runExploitTest",
+        "title": "Sage Armor: Run Exploit Test"
+      },
+      {
+        "command": "sageArmor.viewExploitTrace",
+        "title": "Sage Armor: View Exploit Execution Trace"
       }
     ],
     "views": {

@@ -13,6 +13,11 @@ export interface Vulnerability {
 	attack_scenario: string;
 	remediation: string;
 	remediation_description: string;
+	verified?: boolean;
+	verification_status?: 'verified' | 'unconfirmed';
+	dynamic_trace?: any;
+	cwe_id?: string;
+	function_name?: string;
 }
 
 export interface ReviewResponse {
@@ -65,6 +70,13 @@ export function normalizeReviewResponse(data: any, fallbackLanguage: string): Re
 		const endLine = Math.max(0, endLineRaw - 1);
 		const endColumn = Math.max(0, endColumnRaw - 1);
 
+		const isVerified = Boolean(
+			v.verified ??
+			(v as any).status === 'verified' ??
+			(v as any).verification_status === 'verified'
+		);
+		const verificationStatus = isVerified ? 'verified' : 'unconfirmed';
+
 		return {
 			title: v.title ?? v.issue ?? 'Security issue',
 			description: v.description ?? v.explanation ?? 'Potential vulnerability detected.',
@@ -78,6 +90,11 @@ export function normalizeReviewResponse(data: any, fallbackLanguage: string): Re
 			remediation: remediationPatch || v.suggested_fix || 'Apply input validation and secure coding practices.',
 			remediation_description:
 				remediationDescription || 'Use the proposed fix and re-run scan to verify remediation.',
+			verified: isVerified,
+			verification_status: verificationStatus,
+			dynamic_trace: (v as any).dynamic_trace,
+			cwe_id: (v as any).cwe_id,
+			function_name: (v as any).function_name,
 		};
 	});
 

@@ -35,6 +35,16 @@ type Vulnerability = {
   exploitability_level?: string;
   score?: number;
   file_path?: string;
+  verified?: boolean;
+  verification_status?: 'verified' | 'unconfirmed';
+  dynamic_trace?: {
+    sink_reached?: boolean;
+    sink_line?: number;
+    executed_lines?: (string | number)[];
+    vector_used?: string;
+    harness_output?: string;
+  };
+  function_name?: string;
 };
 type AttackNode = { id: string; label: string; kind: string; criticality: string };
 type AttackEdge = { id: string; source: string; target: string; label?: string };
@@ -91,7 +101,7 @@ export default function ScannerPage() {
   const [copiedIdx, setCopiedIdx] = useState<number | null>(null);
   const [activeTab, setActiveTab] = useState<'results' | 'attack' | 'simulation' | 'copilot'>('results');
   const [scanResults, setScanResults] = useState<{ vulnerabilities?: Vulnerability[] } | null>(null);
-  const [attackGraph, setAttackGraph] = useState<{ nodes: AttackNode[]; edges: AttackEdge[]; attack_paths?: any[] } | null>(null);
+  const [attackGraph, setAttackGraph] = useState<{ nodes: AttackNode[]; edges: AttackEdge[]; attack_paths?: any[]; ast_derived?: boolean } | null>(null);
   const [riskRanking, setRiskRanking] = useState<RiskItem[]>([]);
   const [simulationData, setSimulationData] = useState<SimulationData | null>(null);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([{ role: 'assistant', text: 'Ask me anything about exploitability, attack chains, or what to fix first.' }]);
@@ -243,7 +253,12 @@ export default function ScannerPage() {
     const [attack, risk, simulation] = await Promise.all([
       postJson('/attack-path', payload), postJson('/risk-score', payload), postJson('/simulate', payload),
     ]);
-    if (!attack.error) setAttackGraph({ nodes: attack.attack_graph?.nodes || [], edges: attack.attack_graph?.edges || [], attack_paths: attack.attack_paths || [] });
+    if (!attack.error) setAttackGraph({
+      nodes: attack.attack_graph?.nodes || [],
+      edges: attack.attack_graph?.edges || [],
+      attack_paths: attack.attack_paths || [],
+      ast_derived: attack.ast_derived ?? attack.attack_graph?.ast_derived ?? false,
+    });
     if (!risk.error) setRiskRanking(risk.risk_ranking || []);
     if (!simulation.error) setSimulationData(simulation.breach_simulation || null);
   };
@@ -306,7 +321,7 @@ export default function ScannerPage() {
   const flowNodes: Node[] = useMemo(() => {
     if (!attackGraph?.nodes?.length) return [];
     return attackGraph.nodes.map((n, idx) => {
-      const hue = n.criticality === 'high' ? '#ff6a6a' : n.criticality === 'entry' ? '#9cff93' : '#79a8ff';
+      const hue = n.criticality === 'critical' ? '#ff3333' : n.criticality === 'high' ? '#ff6a6a' : n.criticality === 'entry' ? '#9cff93' : '#79a8ff';
       return { id: n.id, position: { x: idx * 260, y: idx % 2 === 0 ? 50 : 200 }, data: { label: n.label }, style: { background: '#0d1424', color: '#E5E7EB', border: `1px solid ${hue}`, borderRadius: 12, padding: 10, minWidth: 160, boxShadow: `0 0 24px ${hue}33`, fontWeight: 700 } };
     });
   }, [attackGraph]);
@@ -548,12 +563,29 @@ export default function ScannerPage() {
                                      <Sparkles className="w-4 h-4 text-green-300" />
                                      <span className="text-xs uppercase font-bold text-white/80">Refactored Snippet</span>
                                      <span className="text-[10px] px-2 py-0.5 rounded-full bg-green-500/20 border border-green-500/30 text-green-300 font-mono tracking-wide">CONFIDENCE: {snippetFix.confidence?.toUpperCase() || 'HIGH'}</span>
+                                     {snippetFix.patch_status === 'verified' ? (
+                                       <span className="text-[10px] px-2 py-0.5 rounded-full bg-green-500/20 border border-green-500/30 text-green-300 font-mono tracking-wide">🛡️ Verified Patch</span>
+                                     ) : (
+                                       <span className="text-[10px] px-2 py-0.5 rounded-full bg-amber-500/20 border border-amber-500/30 text-amber-300 font-mono tracking-wide">⚠️ Unverified Draft</span>
+                                     )}
                                   </div>
                                   <button onClick={() => { navigator.clipboard.writeText(snippetFix.fixed_code); setCopiedIdx(-1); setTimeout(() => setCopiedIdx(null), 2000) }} className="text-[10px] font-bold px-3 py-1.5 bg-green-500/10 text-green-400 hover:bg-green-500/20 border border-green-500/20 rounded-lg transition-all">
                                      {copiedIdx === -1 ? 'Copied to Clipboard!' : 'Copy Fixed Code'}
                                   </button>
                                </div>
                                <p className="text-xs text-white/60 mb-3 leading-relaxed whitespace-pre-wrap">{snippetFix.explanation}</p>
+                               {snippetFix.verification_gates && (
+                                 <details className="mb-3">
+                                   <summary className="text-[10px] text-cyan-400/80 cursor-pointer uppercase font-mono tracking-wider">🔬 Verification Gate Details</summary>
+                                   <div className="mt-2 p-3 bg-black/60 rounded-lg border border-white/5 space-y-1 font-mono text-[11px]">
+                                     {snippetFix.verification_gates.map((g: any, gi: number) => (
+                                       <div key={gi} className={g.passed ? 'text-green-400' : 'text-red-400'}>
+                                         {g.passed ? '✅' : '❌'} {g.gate}: {g.detail}
+                                       </div>
+                                     ))}
+                                   </div>
+                                 </details>
+                               )}
                                <div className="rounded-lg overflow-hidden border border-white/5">
                                  <pre className="text-[11px] font-mono p-4 bg-[#0A0F1C] overflow-x-auto">
                                     {snippetFix.diff.split('\n').map((line: string, lIdx: number) => {
@@ -588,6 +620,11 @@ export default function ScannerPage() {
                                  <h3 className="text-lg font-bold text-white" style={{ fontFamily: 'Space Grotesk, sans-serif' }}>{v.issue}</h3>
                                  <div className="flex items-center gap-2">
                                    <span className="text-[10px] uppercase font-mono text-white/30 mr-2">{v.file_path || ''}</span>
+                                   {v.verified ? (
+                                     <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-green-500/20 border border-green-500/30 text-green-300">🛡️ Verified</span>
+                                   ) : (
+                                     <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-500/20 border border-amber-500/30 text-amber-300">⚠️ Unconfirmed</span>
+                                   )}
                                    <span className={`text-[10px] font-bold px-3 py-1 rounded-full ${badge} uppercase tracking-wider`}>{v.severity}</span>
                                  </div>
                                </div>
@@ -620,6 +657,25 @@ export default function ScannerPage() {
                                     </pre>
                                   </div>
                                </div>
+
+                               {v.dynamic_trace && (
+                                 <details className="mt-3">
+                                   <summary className="text-[10px] text-cyan-400/70 hover:text-cyan-300 cursor-pointer uppercase tracking-widest font-mono">
+                                     🔬 Sandbox Execution Trace
+                                   </summary>
+                                   <div className="mt-2 p-3 bg-black/60 rounded-lg border border-white/5 font-mono text-[11px] space-y-1">
+                                     <div className="text-cyan-400">Sink Reached: {v.dynamic_trace.sink_reached ? 'YES ✅' : 'NO ⛔'}</div>
+                                     {v.dynamic_trace.sink_line && <div className="text-white/60">Sink Line: {v.dynamic_trace.sink_line}</div>}
+                                     {v.dynamic_trace.vector_used && <div className="text-orange-400">Vector: {v.dynamic_trace.vector_used}</div>}
+                                     {v.dynamic_trace.executed_lines && (
+                                       <div className="text-white/40">Executed: {Array.isArray(v.dynamic_trace.executed_lines) ? v.dynamic_trace.executed_lines.join(', ') : String(v.dynamic_trace.executed_lines)}</div>
+                                     )}
+                                     {v.dynamic_trace.harness_output && (
+                                       <pre className="mt-1 p-2 bg-black/80 rounded text-[10px] text-white/50 whitespace-pre-wrap">{v.dynamic_trace.harness_output}</pre>
+                                     )}
+                                   </div>
+                                 </details>
+                               )}
                              </div>
                            </div>
                          </div>
@@ -627,7 +683,12 @@ export default function ScannerPage() {
                      })}
                    </div>
                 ) : activeTab === 'attack' ? (
-                   <div className="h-[400px] bg-black/20 rounded-xl overflow-hidden border border-white/10">
+                   <div className="relative h-[400px] bg-black/20 rounded-xl overflow-hidden border border-white/10">
+                     {attackGraph?.ast_derived && (
+                       <div className="absolute top-2 right-2 z-10 text-[10px] text-green-400 font-mono px-3 py-1 bg-green-500/10 border border-green-500/20 rounded-lg">
+                         🌳 AST-Derived Graph
+                       </div>
+                     )}
                      <ReactFlow nodes={flowNodes} edges={flowEdges} fitView proOptions={{ hideAttribution: true }}>
                        <Background gap={20} size={1} color="#333" />
                        <Controls />

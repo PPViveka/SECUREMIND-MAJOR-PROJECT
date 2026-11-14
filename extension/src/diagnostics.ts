@@ -19,11 +19,20 @@ export class DiagnosticsManager {
 				new vscode.Position(vuln.line, 1000)
 			);
 
-			const severity = this.mapSeverity(vuln.severity);
+			const isVerified = Boolean(vuln.verified);
+			// Verified findings keep their high severity (Error); unconfirmed findings are demoted to Warning
+			const severity = isVerified
+				? this.mapSeverity(vuln.severity)
+				: vscode.DiagnosticSeverity.Warning;
+
+			const badge = isVerified ? '🛡️ [Verified]' : '⚠️ [Unconfirmed]';
+			const traceNote = isVerified && vuln.dynamic_trace?.sink_reached
+				? ` [Exploit Reached Sink Line ${vuln.dynamic_trace.sink_line || '✓'}]`
+				: '';
 
 			const diagnostic = new vscode.Diagnostic(
 				range,
-				`${vuln.title}: ${vuln.description}`,
+				`${badge} ${vuln.title}: ${vuln.description}${traceNote}`,
 				severity
 			);
 
