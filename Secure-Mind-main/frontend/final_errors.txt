@@ -1,0 +1,6 @@
+﻿src/components/landing/ProblemSolution.tsx(2,1): error TS6192: All imports in import declaration are unused.
+src/components/shared/Navigation.tsx(2,18): error TS6133: 'Code' is declared but its value is never read.
+src/components/shared/Navigation.tsx(32,34): error TS6133: 'index' is declared but its value is never read.
+src/pages/AuthPage.tsx(9,10): error TS6133: 'formData' is declared but its value is never read.
+src/pages/AuthPage.tsx(9,20): error TS6133: 'setFormData' is declared but its value is never read.
+src/pages/ScannerPage.tsx(2,1): error TS6133: 'motion' is declared but its value is never read.

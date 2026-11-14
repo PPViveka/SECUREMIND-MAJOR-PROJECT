@@ -1,0 +1,236 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Space+Grotesk:wght@400;500;600;700;800&display=swap');
+@import "tailwindcss";
+
+
+@theme {
+  --color-secondary-fixed: #c0d1ff;
+  --color-error-dim: #d7383b;
+  --color-primary-fixed: #00fc40;
+  --color-outline-variant: #46484d;
+  --color-on-background: #f6f6fc;
+  --color-primary: #9cff93;
+  --color-on-surface-variant: #aaabb0;
+  --color-on-tertiary: #440900;
+  --color-error-container: #9f0519;
+  --color-surface-container: #171a1f;
+  --color-surface-bright: #292c33;
+  --color-on-surface: #f6f6fc;
+  --color-secondary-dim: #0f6df3;
+  --color-secondary-fixed-dim: #acc3ff;
+  --color-error: #ff716c;
+  --color-secondary-container: #0058ca;
+  --color-on-primary-container: #005a10;
+  --color-surface-variant: #23262c;
+  --color-primary-dim: #00ec3b;
+  --color-outline: #74757a;
+  --color-inverse-surface: #f9f9ff;
+  --color-primary-fixed-dim: #00ec3b;
+  --color-on-secondary: #001d4e;
+  --color-on-error: #490006;
+  --color-tertiary-dim: #dc3300;
+  --color-on-secondary-container: #f7f7ff;
+  --color-on-secondary-fixed-variant: #004baf;
+  --color-surface-container-lowest: #000000;
+  --color-surface-container-high: #1d2025;
+  --color-on-error-container: #ffa8a3;
+  --color-background: #0A0F1C;
+  --color-surface-tint: #9cff93;
+  --color-tertiary-fixed-dim: #ff7d5c;
+  --color-tertiary-container: #fc3c00;
+  --color-on-primary: #006413;
+  --color-inverse-on-surface: #53555a;
+  --color-inverse-primary: #006f16;
+  --color-surface-container-highest: #23262c;
+  --color-on-secondary-fixed: #003076;
+  --color-tertiary-fixed: #ff9479;
+  --color-surface: #0c0e12;
+  --color-primary-container: #00fc40;
+  --color-surface-dim: #0c0e12;
+  --color-on-primary-fixed: #00440a;
+  --color-on-tertiary-container: #000000;
+  --color-on-tertiary-fixed: #360600;
+  --color-on-primary-fixed-variant: #006513;
+  --color-secondary: #6e9bff;
+  --color-on-tertiary-fixed-variant: #721600;
+  --color-tertiary: #ff7350;
+  --color-surface-container-low: #111318;
+
+  --font-headline: "Space Grotesk", system-ui, sans-serif;
+  --font-body: "Inter", system-ui, sans-serif;
+  --font-label: "Space Grotesk", system-ui, sans-serif;
+}
+
+@layer base {
+  * {
+    box-sizing: border-box;
+  }
+
+  html {
+    scroll-behavior: smooth;
+  }
+
+  body {
+    background-color: #0A0F1C;
+    color: #E5E7EB;
+    font-family: "Inter", system-ui, sans-serif;
+    margin: 0;
+    padding: 0;
+    overflow-x: hidden;
+  }
+
+  ::-webkit-scrollbar {
+    width: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    background: #0A0F1C;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: rgba(59, 130, 246, 0.4);
+    border-radius: 3px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: rgba(6, 182, 212, 0.6);
+  }
+}
+
+/* ── Animations from FIGMA theme ── */
+@keyframes float {
+  0%, 100% { transform: translateY(0) translateX(0); }
+  25% { transform: translateY(-20px) translateX(10px); }
+  50% { transform: translateY(-10px) translateX(-10px); }
+  75% { transform: translateY(-30px) translateX(5px); }
+}
+
+@keyframes pulse-glow {
+  0%, 100% { opacity: 1; box-shadow: 0 0 20px rgba(59, 130, 246, 0.5); }
+  50% { opacity: 0.8; box-shadow: 0 0 40px rgba(59, 130, 246, 0.8); }
+}
+
+@keyframes shimmer {
+  0% { background-position: -1000px 0; }
+  100% { background-position: 1000px 0; }
+}
+
+@keyframes scan-line {
+  0% { transform: translateY(-100%); }
+  100% { transform: translateY(100vh); }
+}
+
+@keyframes code-stream {
+  0% { transform: translateY(-100%); opacity: 0; }
+  50% { opacity: 1; }
+  100% { transform: translateY(100vh); opacity: 0; }
+}
+
+@keyframes radar-sweep {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+@keyframes gradient-shift {
+  0% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+  100% { background-position: 0% 50%; }
+}
+
+@keyframes slide-up {
+  from { transform: translateY(30px); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
+
+@keyframes scale-in {
+  from { transform: scale(0.9); opacity: 0; }
+  to { transform: scale(1); opacity: 1; }
+}
+
+@keyframes grid-move {
+  0% { transform: translate(0, 0); }
+  100% { transform: translate(50px, 50px); }
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+@keyframes autorenew {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+/* Utility animation classes */
+.animate-float { animation: float linear infinite; }
+.animate-pulse-glow { animation: pulse-glow 2s ease-in-out infinite; }
+.animate-shimmer {
+  animation: shimmer 2s linear infinite;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.1), transparent);
+  background-size: 1000px 100%;
+}
+.animate-scan-line { animation: scan-line 3s linear infinite; }
+.animate-code-stream { animation: code-stream 8s linear infinite; }
+.animate-radar-sweep { animation: radar-sweep 4s linear infinite; }
+.animate-gradient-shift {
+  animation: gradient-shift 5s ease infinite;
+  background-size: 200% 200%;
+}
+.animate-slide-up { animation: slide-up 0.6s ease-out; }
+.animate-scale-in { animation: scale-in 0.4s ease-out; }
+.animate-grid-move { animation: grid-move 20s linear infinite; }
+.animate-spin { animation: spin 1s linear infinite; }
+
+/* ── ReactFlow dark-theme overrides ── */
+.react-flow__edge-textbg {
+  fill: #111318;
+  opacity: 0.98;
+  stroke: #6e9bff;
+  stroke-width: 1;
+}
+
+.react-flow__edge-text {
+  fill: #e9f1ff;
+  font-weight: 700;
+}
+
+.react-flow__controls {
+  background: #111318 !important;
+  border: 1px solid rgba(59,130,246,0.3) !important;
+  border-radius: 14px !important;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.35) !important;
+  overflow: hidden;
+}
+
+.react-flow__controls-button {
+  background: #171a1f !important;
+  border-bottom: 1px solid #343842 !important;
+  color: #dbe8ff !important;
+}
+
+.react-flow__controls-button:hover {
+  background: #23262c !important;
+}
+
+.react-flow__controls-button svg {
+  width: 16px !important;
+  height: 16px !important;
+}
+
+.react-flow__controls-button svg * {
+  stroke: #dbe8ff !important;
+  fill: #dbe8ff !important;
+  stroke-width: 1.8 !important;
+}
+
+.react-flow__edge-path {
+  stroke: #79a8ff !important;
+  stroke-width: 2.4 !important;
+}
+
+.react-flow__arrowhead path {
+  fill: #79a8ff !important;
+}
+
+.react-flow__minimap {
+  background: #111318;
+  border: 1px solid rgba(59,130,246,0.3);
+  border-radius: 10px;
+}

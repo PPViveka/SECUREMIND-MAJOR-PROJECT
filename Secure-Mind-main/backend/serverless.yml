@@ -1,0 +1,159 @@
+service: ai-security-agent
+
+frameworkVersion: '3'
+
+provider:
+  name: aws
+  runtime: python3.11
+  region: ${env:AWS_REGION, 'us-east-1'}
+  timeout: 30
+  memorySize: 512
+  apiGateway:
+    throttling:
+      maxRequestsPerSecond: 10
+      maxConcurrentRequests: 5
+  environment:
+    AWS_ACCOUNT_ID: !Ref AWS::AccountId
+    MODEL_PROVIDER: ${env:MODEL_PROVIDER, 'nvidia'}
+    NVIDIA_API_KEY: ${env:NVIDIA_API_KEY, ''}
+    NVIDIA_MODEL: ${env:NVIDIA_MODEL, 'meta/llama3-8b-instruct'}
+    GITHUB_WEBHOOK_SECRET: ${env:GITHUB_WEBHOOK_SECRET, ''}
+    GITHUB_TOKEN: ${env:GITHUB_TOKEN, ''}
+  
+  iamRoleStatements:
+    - Effect: Allow
+      Action:
+        - bedrock:InvokeModel
+      Resource: 
+        - "arn:aws:bedrock:*::foundation-model/*"
+        - "arn:aws:bedrock:*:*:inference-profile/*"
+    - Effect: Allow
+      Action:
+        - logs:CreateLogGroup
+        - logs:CreateLogStream
+        - logs:PutLogEvents
+      Resource: "arn:aws:logs:*:*:*"
+
+
+functions:
+  reviewCode:
+    handler: src/handler.review_code
+    # AI call — strict concurrency to cap Gemini/Bedrock spend
+    reservedConcurrency: 1
+    events:
+      - http:
+          path: /review
+          method: post
+          cors: true
+      - http:
+          path: /webhook
+          method: post
+          cors: true
+
+  attackPath:
+    handler: src/handler.attack_path
+    # Local intelligence — 2 parallel OK, no AI call cost
+    reservedConcurrency: 2
+    events:
+      - http:
+          path: /attack-path
+          method: post
+          cors: true
+
+  riskScore:
+    handler: src/handler.risk_score
+    # Local intelligence — 2 parallel OK, no AI call cost
+    reservedConcurrency: 2
+    events:
+      - http:
+          path: /risk-score
+          method: post
+          cors: true
+
+  simulateBreach:
+    handler: src/handler.simulate
+    # Local intelligence — 2 parallel OK, no AI call cost
+    reservedConcurrency: 2
+    events:
+      - http:
+          path: /simulate
+          method: post
+          cors: true
+
+  securityCopilot:
+    handler: src/handler.copilot_chat
+    # AI call — strict concurrency to cap Gemini/Bedrock spend
+    reservedConcurrency: 1
+    events:
+      - http:
+          path: /copilot
+          method: post
+          cors: true
+
+  repoScanStart:
+    handler: src/handler.repo_scan_start
+    timeout: 900
+    reservedConcurrency: 1
+    events:
+      - http:
+          path: /repo-scan/start
+          method: post
+          cors: true
+
+  repoScanStatus:
+    handler: src/handler.repo_scan_status
+    events:
+      - http:
+          path: /repo-scan/status
+          method: get
+          cors: true
+
+  repoAutofixStart:
+    handler: src/handler.repo_autofix_start
+    # AI-heavy transformations + GitHub branch/PR creation 
+    timeout: 900
+    reservedConcurrency: 1
+    events:
+      - http:
+          path: /repo-autofix/start
+          method: post
+          cors: true
+
+  repoAutofixStatus:
+    handler: src/handler.repo_autofix_status
+    events:
+      - http:
+          path: /repo-autofix/status
+          method: get
+          cors: true
+
+package:
+  exclude:
+    - venv/**
+    - tests/**
+    - node_modules/**
+    - .env
+    - "**/__pycache__/**"
+    - "**/*.pyc"
+
+plugins:
+  - serverless-python-requirements
+  - serverless-offline
+
+custom:
+  serverless-offline:
+    noPrependStageInUrl: true
+    pythonBin: python3
+    useChildProcesses: true
+    host: 0.0.0.0
+    httpPort: 4005
+    lambdaPort: 4006
+  pythonRequirements:
+    dockerizePip: false
+    pythonBin: ./venv/bin/python3
+    slim: true
+    strip: false
+    noDeploy:
+      - pytest
+      - pytest-mock
+

@@ -1,0 +1,874 @@
+{
+  "936b6233-bfe5-4deb-b559-1ea4f69196e1": {
+    "job_id": "936b6233-bfe5-4deb-b559-1ea4f69196e1",
+    "status": "completed",
+    "stage": "completed",
+    "progress": 100,
+    "results": [
+      {
+        "file_path": "snippet.python",
+        "original_code": "import os\nimport sqlite3\n\ndef get_user(user_id):\n    # Vulnerable to SQL injection\n    conn = sqlite3.connect('users.db')\n    cursor = conn.cursor()\n    query = \"SELECT * FROM users WHERE id = \" + user_id\n    cursor.execute(query)\n    return cursor.fetchall()\n",
+        "fixed_code": "import os\nimport sqlite3\n\ndef get_user(user_id):\n    # Vulnerable to SQL injection\n    conn = sqlite3.connect('users.db')\n    cursor = conn.cursor()\n    query = \"SELECT * FROM users WHERE id = \" + user_id\n    cursor.execute(query)\n    return cursor.fetchall()\n",
+        "diff": "",
+        "explanation": "- Using a parameterized query with a placeholder and a tuple of values eliminates the risk of SQL injection.",
+        "confidence": "High"
+      }
+    ],
+    "logs": [
+      "Job started",
+      "Analyzing snippet...",
+      "Initializing snippet analysis pipeline...",
+      "Analyzing vulnerabilities inside code snippet...",
+      "Generating secure code solution via SageArmor AI...",
+      "Optimizing and validating generated fix...",
+      "Error: AI returned invalid content for snippet.python",
+      "Fix ready!",
+      "Job completed successfully"
+    ],
+    "pr_url": null,
+    "created_at": 1775099406.220455,
+    "summary": "Applied 1 secure remediations to the snippet.",
+    "vulnerabilities_partial": [],
+    "vulnerabilities_full": [],
+    "fixes": [],
+    "queue": []
+  },
+  "598e2c00-8536-495e-8c14-b511d434cc81": {
+    "job_id": "598e2c00-8536-495e-8c14-b511d434cc81",
+    "status": "completed",
+    "stage": "completed",
+    "progress": 100,
+    "results": [
+      {
+        "file_path": "snippet.python",
+        "original_code": "import os\nimport sqlite3\n\ndef get_user(user_id):\n    # Vulnerable to SQL injection\n    conn = sqlite3.connect('users.db')\n    cursor = conn.cursor()\n    query = \"SELECT * FROM users WHERE id = \" + user_id\n    cursor.execute(query)\n    return cursor.fetchall()\n",
+        "fixed_code": "import os\nimport sqlite3\n\ndef get_user(user_id):\n    # Vulnerable to SQL injection\n    conn = sqlite3.connect('users.db')\n    cursor = conn.cursor()\n    query = \"SELECT * FROM users WHERE id = \" + user_id\n    cursor.execute(query)\n    return cursor.fetchall()\n",
+        "diff": "",
+        "explanation": "- Using a parameterized query with a placeholder and a tuple of values eliminates the risk of SQL injection.",
+        "confidence": "High"
+      }
+    ],
+    "logs": [
+      "Job started",
+      "Analyzing snippet...",
+      "Initializing snippet analysis pipeline...",
+      "Analyzing vulnerabilities inside code snippet...",
+      "Generating secure code solution via SageArmor AI...",
+      "Optimizing and validating generated fix...",
+      "Error: AI returned invalid content for snippet.python",
+      "Fix ready!",
+      "Job completed successfully"
+    ],
+    "pr_url": null,
+    "created_at": 1775099436.2027369,
+    "summary": "Applied 1 secure remediations to the snippet.",
+    "vulnerabilities_partial": [],
+    "vulnerabilities_full": [],
+    "fixes": [],
+    "queue": []
+  },
+  "f1877696-adf1-416a-b9c2-ea788ecc5816": {
+    "job_id": "f1877696-adf1-416a-b9c2-ea788ecc5816",
+    "status": "completed",
+    "stage": "completed",
+    "progress": 100,
+    "results": [
+      {
+        "file_path": "snippet.javascript",
+        "original_code": "app.get(\"/profile/:id\", (req, res) => {\n  const user = getUserById(req.params.id);\n  res.send(user);\n});",
+        "fixed_code": "app.get(\"/profile/:id\", (req, res) => {\n  const user = getUserById(req.params.id);\n  res.send(user);\n});",
+        "diff": "",
+        "explanation": "- The `filter` method is used to ensure the retrieved user has the correct `id` before sending it to the client.",
+        "confidence": "High"
+      }
+    ],
+    "logs": [
+      "Job started",
+      "Analyzing snippet...",
+      "Initializing snippet analysis pipeline...",
+      "Analyzing vulnerabilities inside code snippet...",
+      "Generating secure code solution via SageArmor AI...",
+      "Optimizing and validating generated fix...",
+      "Error: AI returned invalid content for snippet.javascript",
+      "Fix ready!",
+      "Job completed successfully"
+    ],
+    "pr_url": null,
+    "created_at": 1775099657.399404,
+    "summary": "Applied 1 secure remediations to the snippet.",
+    "vulnerabilities_partial": [],
+    "vulnerabilities_full": [],
+    "fixes": [],
+    "queue": []
+  },
+  "355875de-405c-441e-a4f7-6a088f697c00": {
+    "job_id": "355875de-405c-441e-a4f7-6a088f697c00",
+    "status": "completed",
+    "stage": "completed",
+    "progress": 100,
+    "results": [
+      {
+        "file_path": "snippet.python",
+        "original_code": "import os\nimport sqlite3\n\ndef get_user(user_id):\n    # Vulnerable to SQL injection\n    conn = sqlite3.connect('users.db')\n    cursor = conn.cursor()\n    query = \"SELECT * FROM users WHERE id = \" + user_id\n    cursor.execute(query)\n    return cursor.fetchall()\n",
+        "fixed_code": "import os\nimport sqlite3\n\ndef get_user(user_id):\n    # Vulnerable to SQL injection\n    conn = sqlite3.connect('users.db')\n    cursor = conn.cursor()\n    query = \"SELECT * FROM users WHERE id = \" + user_id\n    cursor.execute(query)\n    return cursor.fetchall()\n",
+        "diff": "",
+        "explanation": "- Using a parameterized query with a placeholder and a tuple of values eliminates the risk of SQL injection.",
+        "confidence": "High"
+      }
+    ],
+    "logs": [
+      "Job started",
+      "Analyzing snippet...",
+      "Initializing snippet analysis pipeline...",
+      "Analyzing vulnerabilities inside code snippet...",
+      "Generating secure code solution via SageArmor AI...",
+      "Optimizing and validating generated fix...",
+      "Error: AI returned invalid content for snippet.python",
+      "Fix ready!",
+      "Job completed successfully"
+    ],
+    "pr_url": null,
+    "created_at": 1775099673.784584,
+    "summary": "Applied 1 secure remediations to the snippet.",
+    "vulnerabilities_partial": [],
+    "vulnerabilities_full": [],
+    "fixes": [],
+    "queue": []
+  },
+  "502096c8-5ef2-4506-a8c7-da46736dae65": {
+    "job_id": "502096c8-5ef2-4506-a8c7-da46736dae65",
+    "status": "completed",
+    "stage": "completed",
+    "progress": 100,
+    "results": [
+      {
+        "file_path": "snippet.python",
+        "original_code": "app.get(\"/profile/:id\", (req, res) => {\n  const user = getUserById(req.params.id);\n  res.send(user);\n});",
+        "fixed_code": "app.get(\"/profile/:id\", (req, res) => {\n  const user = getUserById(req.params.id);\n  res.send(user);\n});",
+        "diff": "",
+        "explanation": "- Using a library or function that prevents SQL injection eliminates the risk.",
+        "confidence": "High"
+      }
+    ],
+    "logs": [
+      "Job started",
+      "Analyzing snippet...",
+      "Initializing snippet analysis pipeline...",
+      "Analyzing vulnerabilities inside code snippet...",
+      "Generating secure code solution via SageArmor AI...",
+      "Optimizing and validating generated fix...",
+      "Error: AI returned invalid content for snippet.python",
+      "Fix ready!",
+      "Job completed successfully"
+    ],
+    "pr_url": null,
+    "created_at": 1775099746.399175,
+    "summary": "Applied 1 secure remediations to the snippet.",
+    "vulnerabilities_partial": [],
+    "vulnerabilities_full": [],
+    "fixes": [],
+    "queue": []
+  },
+  "47956d4d-6285-42a4-99c2-3b5e0152d321": {
+    "job_id": "47956d4d-6285-42a4-99c2-3b5e0152d321",
+    "status": "completed",
+    "stage": "completed",
+    "progress": 100,
+    "results": [],
+    "logs": [
+      "Job started",
+      "Stage 1: Cloning and selecting priority files from https://github.com/shrey-ran/sagearmor-testing-...",
+      "Split 3 files into 1 batches.",
+      "Scanning batch 1/1...",
+      "Batch 1 failed (Could not extract valid JSON from AI response: line 1 column 1 (char 0)). Skipping...",
+      "Stage 2: Enriching 0 identified vulnerabilities...",
+      "Scan completed successfully!"
+    ],
+    "pr_url": null,
+    "created_at": 1775099771.361145,
+    "summary": "",
+    "vulnerabilities_partial": [],
+    "vulnerabilities_full": [],
+    "fixes": [],
+    "queue": [],
+    "repo_stats": {
+      "total_seen": 7,
+      "text_candidates": 7,
+      "matched_files": 3,
+      "selected_files": 3,
+      "truncated_repo_map": false
+    },
+    "risk_ranking": [],
+    "attack_graph": {
+      "nodes": [],
+      "edges": [],
+      "attack_paths": []
+    }
+  },
+  "9f30c75a-13ed-4901-9e77-c0f9b762536f": {
+    "job_id": "9f30c75a-13ed-4901-9e77-c0f9b762536f",
+    "status": "completed",
+    "stage": "completed",
+    "progress": 100,
+    "results": [
+      {
+        "file_path": "snippet.python",
+        "original_code": "const { exec } = require(\"child_process\");\n\nexec(\"ls \" + req.query.dir, (err, stdout) => {\n  res.send(stdout);\n});",
+        "fixed_code": "const { exec } = require('child_process');\nexec('ls ' + process.env.DIR, (err, stdout) => {\n  res.send(stdout);\n});",
+        "diff": "--- Original.py\n+++ Fixed.py\n@@ -1,5 +1,4 @@\n-const { exec } = require(\"child_process\");\n-\n-exec(\"ls \" + req.query.dir, (err, stdout) => {\n+const { exec } = require('child_process');\n+exec('ls ' + process.env.DIR, (err, stdout) => {\n   res.send(stdout);\n });",
+        "explanation": "- Replaced hardcoded directory path with environment variable to prevent exposure of sensitive information",
+        "confidence": "High"
+      }
+    ],
+    "logs": [
+      "Job started",
+      "Analyzing snippet...",
+      "Initializing snippet analysis pipeline...",
+      "Analyzing vulnerabilities inside code snippet...",
+      "Generating secure code solution via SageArmor AI...",
+      "Optimizing and validating generated fix...",
+      "Fix ready!",
+      "Job completed successfully"
+    ],
+    "pr_url": null,
+    "created_at": 1775099838.611993,
+    "summary": "Applied 1 secure remediations to the snippet.",
+    "vulnerabilities_partial": [],
+    "vulnerabilities_full": [],
+    "fixes": [],
+    "queue": []
+  },
+  "b23f84d8-904a-4d09-9c3a-cd710f918f48": {
+    "job_id": "b23f84d8-904a-4d09-9c3a-cd710f918f48",
+    "status": "completed",
+    "stage": "completed",
+    "progress": 100,
+    "results": [
+      {
+        "file_path": "snippet.python",
+        "original_code": "const { exec } = require(\"child_process\");\n\nexec(\"ls \" + req.query.dir, (err, stdout) => {\n  res.send(stdout);\n});",
+        "fixed_code": "const { exec } = require(\"child_process\");\n\nexec(\"ls \" + req.query.dir, (err, stdout) => {\n  res.send(stdout);\n});",
+        "diff": "",
+        "explanation": "- Replaced hardcoded directory path with environment variable to prevent exposure of sensitive information",
+        "confidence": "High"
+      }
+    ],
+    "logs": [
+      "Job started",
+      "Analyzing snippet...",
+      "Initializing snippet analysis pipeline...",
+      "Analyzing vulnerabilities inside code snippet...",
+      "Generating secure code solution via SageArmor AI...",
+      "Optimizing and validating generated fix...",
+      "Error: AI returned invalid content for snippet.python",
+      "Applying security fix to frontend editor...",
+      "Fix ready!",
+      "Job completed successfully"
+    ],
+    "pr_url": null,
+    "created_at": 1775099867.563757,
+    "summary": "Applied 1 secure remediations to the snippet.",
+    "vulnerabilities_partial": [],
+    "vulnerabilities_full": [],
+    "fixes": [],
+    "queue": [],
+    "modified_files": "const { exec } = require(\"child_process\");\n\nexec(\"ls \" + req.query.dir, (err, stdout) => {\n  res.send(stdout);\n});"
+  },
+  "17c3a4be-f969-4ce6-841d-c349b6ccee6e": {
+    "job_id": "17c3a4be-f969-4ce6-841d-c349b6ccee6e",
+    "status": "completed",
+    "stage": "completed",
+    "progress": 100,
+    "results": [
+      {
+        "file_path": "snippet.javascript",
+        "original_code": "{\n  \"Version\": \"2012-10-17\",\n  \"Statement\": [\n    {\n      \"Effect\": \"Allow\",\n      \"Principal\": \"*\",\n      \"Action\": \"s3:GetObject\",\n      \"Resource\": \"arn:aws:s3:::my-bucket/*\"\n    }\n  ]\n}",
+        "fixed_code": "{\"Version\": \"2012-10-17\",\"Statement\": [{\"Effect\": \"Allow\",\"Principal\": \"arn:aws:iam::123456789012:user/my-user\",\"Action\": \"s3:GetObject\",\"Resource\": \"arn:aws:s3:::my-bucket/*\"}]}",
+        "diff": "--- Original.py\n+++ Fixed.py\n@@ -1,11 +1 @@\n-{\n-  \"Version\": \"2012-10-17\",\n-  \"Statement\": [\n-    {\n-      \"Effect\": \"Allow\",\n-      \"Principal\": \"*\",\n-      \"Action\": \"s3:GetObject\",\n-      \"Resource\": \"arn:aws:s3:::my-bucket/*\"\n-    }\n-  ]\n-}+{\"Version\": \"2012-10-17\",\"Statement\": [{\"Effect\": \"Allow\",\"Principal\": \"arn:aws:iam::123456789012:user/my-user\",\"Action\": \"s3:GetObject\",\"Resource\": \"arn:aws:s3:::my-bucket/*\"}]}",
+        "explanation": "- Replaced the '*' wildcard with a specific IAM user to restrict access to the S3 bucket",
+        "confidence": "High"
+      }
+    ],
+    "logs": [
+      "Job started",
+      "Analyzing snippet...",
+      "Initializing snippet analysis pipeline...",
+      "Analyzing vulnerabilities inside code snippet...",
+      "Generating secure code solution via SageArmor AI...",
+      "Optimizing and validating generated fix...",
+      "Fix ready!",
+      "Job completed successfully"
+    ],
+    "pr_url": null,
+    "created_at": 1775100190.378925,
+    "summary": "Applied 1 secure remediations to the snippet.",
+    "vulnerabilities_partial": [],
+    "vulnerabilities_full": [],
+    "fixes": [],
+    "queue": []
+  },
+  "df62bcd4-85b7-4843-9ccf-39699eb74af7": {
+    "job_id": "df62bcd4-85b7-4843-9ccf-39699eb74af7",
+    "status": "completed",
+    "stage": "completed",
+    "progress": 100,
+    "results": [
+      {
+        "file_path": "snippet.javascript",
+        "original_code": "{\n  \"Version\": \"2012-10-17\",\n  \"Statement\": [\n    {\n      \"Effect\": \"Allow\",\n      \"Principal\": \"*\",\n      \"Action\": \"s3:GetObject\",\n      \"Resource\": \"arn:aws:s3:::my-bucket/*\"\n    }\n  ]\n}",
+        "fixed_code": "{\n  \"Version\": \"2012-10-17\",\n  \"Statement\": [\n    {\n      \"Effect\": \"Allow\",\n      \"Principal\": \"*\",\n      \"Action\": \"s3:GetObject\",\n      \"Resource\": \"arn:aws:s3:::my-bucket/*\"\n    }\n  ]\n}",
+        "diff": "",
+        "explanation": "- Replaced the '*' wildcard with a specific IAM user to restrict access to the 'my-bucket' S3 bucket.",
+        "confidence": "High"
+      }
+    ],
+    "logs": [
+      "Job started",
+      "Analyzing snippet...",
+      "Initializing snippet analysis pipeline...",
+      "Analyzing vulnerabilities inside code snippet...",
+      "Generating secure code solution via SageArmor AI...",
+      "Optimizing and validating generated fix...",
+      "Error: AI returned invalid content for snippet.javascript",
+      "Applying security fix to frontend editor...",
+      "Fix ready!",
+      "Job completed successfully"
+    ],
+    "pr_url": null,
+    "created_at": 1775100212.264401,
+    "summary": "Applied 1 secure remediations to the snippet.",
+    "vulnerabilities_partial": [],
+    "vulnerabilities_full": [],
+    "fixes": [],
+    "queue": [],
+    "modified_files": "{\n  \"Version\": \"2012-10-17\",\n  \"Statement\": [\n    {\n      \"Effect\": \"Allow\",\n      \"Principal\": \"*\",\n      \"Action\": \"s3:GetObject\",\n      \"Resource\": \"arn:aws:s3:::my-bucket/*\"\n    }\n  ]\n}"
+  },
+  "811a3e27-e9fb-4a3d-ab7b-53afcc955bfa": {
+    "job_id": "811a3e27-e9fb-4a3d-ab7b-53afcc955bfa",
+    "status": "failed",
+    "stage": "failed",
+    "progress": 85,
+    "results": [],
+    "logs": [
+      "Job started",
+      "Analyzing snippet...",
+      "Initializing snippet analysis pipeline...",
+      "Analyzing vulnerabilities inside code snippet...",
+      "Generating secure code solution via SageArmor AI...",
+      "Optimizing and validating generated fix...",
+      "ERROR: 'dict' object has no attribute 'strip'"
+    ],
+    "pr_url": null,
+    "created_at": 1775100239.997149,
+    "summary": "",
+    "vulnerabilities_partial": [],
+    "vulnerabilities_full": [],
+    "fixes": [],
+    "queue": []
+  },
+  "fe50e6d2-a0ee-41f2-adad-52ce16ad420f": {
+    "job_id": "fe50e6d2-a0ee-41f2-adad-52ce16ad420f",
+    "status": "failed",
+    "stage": "failed",
+    "progress": 85,
+    "results": [],
+    "logs": [
+      "Job started",
+      "Analyzing snippet...",
+      "Initializing snippet analysis pipeline...",
+      "Analyzing vulnerabilities inside code snippet...",
+      "Generating secure code solution via SageArmor AI...",
+      "Optimizing and validating generated fix...",
+      "ERROR: 'dict' object has no attribute 'strip'"
+    ],
+    "pr_url": null,
+    "created_at": 1775100300.767665,
+    "summary": "",
+    "vulnerabilities_partial": [],
+    "vulnerabilities_full": [],
+    "fixes": [],
+    "queue": []
+  },
+  "fc3fba16-542a-40c6-ae6a-9398a1795910": {
+    "job_id": "fc3fba16-542a-40c6-ae6a-9398a1795910",
+    "status": "completed",
+    "stage": "completed",
+    "progress": 100,
+    "results": [
+      {
+        "file_path": "snippet.python",
+        "original_code": "import os\nimport sqlite3\n\ndef get_user(user_id):\n    # Vulnerable to SQL injection\n    conn = sqlite3.connect('users.db')\n    cursor = conn.cursor()\n    query = \"SELECT * FROM users WHERE id = \" + user_id\n    cursor.execute(query)\n    return cursor.fetchall()\n",
+        "fixed_code": "import os\nimport sqlite3\n\ndef get_user(user_id):\n    # Vulnerable to SQL injection\n    conn = sqlite3.connect('users.db')\n    cursor = conn.cursor()\n    query = \"SELECT * FROM users WHERE id = \" + user_id\n    cursor.execute(query)\n    return cursor.fetchall()\n",
+        "diff": "",
+        "explanation": "- Using a parameterized query with a placeholder and a tuple of values eliminates the risk of SQL injection.",
+        "confidence": "High"
+      }
+    ],
+    "logs": [
+      "Job started",
+      "Analyzing snippet...",
+      "Initializing snippet analysis pipeline...",
+      "Analyzing vulnerabilities inside code snippet...",
+      "Generating secure code solution via SageArmor AI...",
+      "Optimizing and validating generated fix...",
+      "Error: AI returned invalid content for snippet.python",
+      "Applying security fix to frontend editor...",
+      "Fix ready!",
+      "Job completed successfully"
+    ],
+    "pr_url": null,
+    "created_at": 1775100607.7489421,
+    "summary": "Applied 1 secure remediations to the snippet.",
+    "vulnerabilities_partial": [],
+    "vulnerabilities_full": [],
+    "fixes": [],
+    "queue": [],
+    "modified_files": "import os\nimport sqlite3\n\ndef get_user(user_id):\n    # Vulnerable to SQL injection\n    conn = sqlite3.connect('users.db')\n    cursor = conn.cursor()\n    query = \"SELECT * FROM users WHERE id = \" + user_id\n    cursor.execute(query)\n    return cursor.fetchall()\n"
+  },
+  "72022676-7b39-4b14-ad8b-d466c4bd9988": {
+    "job_id": "72022676-7b39-4b14-ad8b-d466c4bd9988",
+    "status": "completed",
+    "stage": "completed",
+    "progress": 100,
+    "results": [
+      {
+        "file_path": "snippet.python",
+        "original_code": "import os\nimport sqlite3\n\ndef get_user(user_id):\n    # Vulnerable to SQL injection\n    conn = sqlite3.connect('users.db')\n    cursor = conn.cursor()\n    query = \"SELECT * FROM users WHERE id = \" + user_id\n    cursor.execute(query)\n    return cursor.fetchall()\n",
+        "fixed_code": "import os\nimport sqlite3\n\ndef get_user(user_id):\n    # Vulnerable to SQL injection\n    conn = sqlite3.connect('users.db')\n    cursor = conn.cursor()\n    query = \"SELECT * FROM users WHERE id = \" + user_id\n    cursor.execute(query)\n    return cursor.fetchall()\n",
+        "diff": "",
+        "explanation": "- Using a parameterized query with a placeholder and a tuple of values eliminates the risk of SQL injection.",
+        "confidence": "High"
+      }
+    ],
+    "logs": [
+      "Job started",
+      "Analyzing snippet...",
+      "Initializing snippet analysis pipeline...",
+      "Analyzing vulnerabilities inside code snippet...",
+      "Generating secure code solution via SageArmor AI...",
+      "Optimizing and validating generated fix...",
+      "Error: AI returned invalid content for snippet.python",
+      "Applying security fix to frontend editor...",
+      "Fix ready!",
+      "Job completed successfully"
+    ],
+    "pr_url": null,
+    "created_at": 1775100626.529196,
+    "summary": "Applied 1 secure remediations to the snippet.",
+    "vulnerabilities_partial": [],
+    "vulnerabilities_full": [],
+    "fixes": [],
+    "queue": [],
+    "modified_files": "import os\nimport sqlite3\n\ndef get_user(user_id):\n    # Vulnerable to SQL injection\n    conn = sqlite3.connect('users.db')\n    cursor = conn.cursor()\n    query = \"SELECT * FROM users WHERE id = \" + user_id\n    cursor.execute(query)\n    return cursor.fetchall()\n"
+  },
+  "5774b975-89b3-4d8f-b1d2-5853542d5fff": {
+    "job_id": "5774b975-89b3-4d8f-b1d2-5853542d5fff",
+    "status": "completed",
+    "stage": "completed",
+    "progress": 100,
+    "results": [
+      {
+        "file_path": "snippet.python",
+        "original_code": "import os\nimport sqlite3\n\ndef get_user(user_id):\n    # Vulnerable to SQL injection\n    conn = sqlite3.connect('users.db')\n    cursor = conn.cursor()\n    query = \"SELECT * FROM users WHERE id = \" + user_id\n    cursor.execute(query)\n    return cursor.fetchall()\n",
+        "fixed_code": "import os\nimport sqlite3\ndef get_user(user_id):\n    conn = sqlite3.connect('users.db')\n    cursor = conn.cursor()\n    cursor.execute('SELECT * FROM users WHERE id = ?', (user_id,))\n    return cursor.fetchall()",
+        "diff": "--- Original.py\n+++ Fixed.py\n@@ -1,10 +1,7 @@\n import os\n import sqlite3\n-\n def get_user(user_id):\n-    # Vulnerable to SQL injection\n     conn = sqlite3.connect('users.db')\n     cursor = conn.cursor()\n-    query = \"SELECT * FROM users WHERE id = \" + user_id\n-    cursor.execute(query)\n-    return cursor.fetchall()\n+    cursor.execute('SELECT * FROM users WHERE id = ?', (user_id,))\n+    return cursor.fetchall()",
+        "explanation": "- Using a parameterized query with a tuple of values eliminates the risk of SQL injection by preventing the execution of arbitrary SQL code.",
+        "confidence": "High"
+      }
+    ],
+    "logs": [
+      "Job started",
+      "Analyzing snippet...",
+      "Initializing snippet analysis pipeline...",
+      "Analyzing vulnerabilities inside code snippet...",
+      "Generating secure code solution via SageArmor AI...",
+      "Optimizing and validating generated fix...",
+      "Fix ready!",
+      "Job completed successfully"
+    ],
+    "pr_url": null,
+    "created_at": 1775100999.7323499,
+    "summary": "Applied 1 secure remediations to the snippet.",
+    "vulnerabilities_partial": [],
+    "vulnerabilities_full": [],
+    "fixes": [],
+    "queue": []
+  },
+  "f0284800-41dd-4f6e-9351-7668b1cc930a": {
+    "job_id": "f0284800-41dd-4f6e-9351-7668b1cc930a",
+    "status": "completed",
+    "stage": "completed",
+    "progress": 100,
+    "results": [
+      {
+        "file_path": "snippet.python",
+        "original_code": "import os\nimport sqlite3\n\ndef get_user(user_id):\n    # Vulnerable to SQL injection\n    conn = sqlite3.connect('users.db')\n    cursor = conn.cursor()\n    query = \"SELECT * FROM users WHERE id = \" + user_id\n    cursor.execute(query)\n    return cursor.fetchall()\n",
+        "fixed_code": "import os\nimport sqlite3\ndef get_user(user_id):\n    conn = sqlite3.connect('users.db')\n    cursor = conn.cursor()\n    query = 'SELECT * FROM users WHERE id = ?'\n    cursor.execute(query, (user_id,))\n    return cursor.fetchall()",
+        "diff": "--- Original.py\n+++ Fixed.py\n@@ -1,10 +1,8 @@\n import os\n import sqlite3\n-\n def get_user(user_id):\n-    # Vulnerable to SQL injection\n     conn = sqlite3.connect('users.db')\n     cursor = conn.cursor()\n-    query = \"SELECT * FROM users WHERE id = \" + user_id\n-    cursor.execute(query)\n-    return cursor.fetchall()\n+    query = 'SELECT * FROM users WHERE id = ?'\n+    cursor.execute(query, (user_id,))\n+    return cursor.fetchall()",
+        "explanation": "- Using a parameterized query with a tuple of values eliminates the risk of SQL injection by preventing the execution of arbitrary SQL code.",
+        "confidence": "High"
+      }
+    ],
+    "logs": [
+      "Job started",
+      "Analyzing snippet...",
+      "Initializing snippet analysis pipeline...",
+      "Analyzing vulnerabilities inside code snippet...",
+      "Generating secure code solution via SageArmor AI...",
+      "Optimizing and validating generated fix...",
+      "Applying security fix to frontend editor...",
+      "Fix ready!",
+      "Job completed successfully"
+    ],
+    "pr_url": null,
+    "created_at": 1775101014.996255,
+    "summary": "Applied 1 secure remediations to the snippet.",
+    "vulnerabilities_partial": [],
+    "vulnerabilities_full": [],
+    "fixes": [],
+    "queue": [],
+    "modified_files": "import os\nimport sqlite3\ndef get_user(user_id):\n    conn = sqlite3.connect('users.db')\n    cursor = conn.cursor()\n    query = 'SELECT * FROM users WHERE id = ?'\n    cursor.execute(query, (user_id,))\n    return cursor.fetchall()"
+  },
+  "a81f7f5c-c1c8-478a-bbcf-614c6989e177": {
+    "job_id": "a81f7f5c-c1c8-478a-bbcf-614c6989e177",
+    "status": "completed",
+    "stage": "completed",
+    "progress": 100,
+    "results": [
+      {
+        "file_path": "snippet.python",
+        "original_code": "import os\nimport sqlite3\ndef get_user(user_id):\n    conn = sqlite3.connect('users.db')\n    cursor = conn.cursor()\n    query = 'SELECT * FROM users WHERE id = ?'\n    cursor.execute(query, (user_id,))\n    return cursor.fetchall()",
+        "fixed_code": "import os\nimport sqlite3\ndef get_user(user_id):\n    conn = sqlite3.connect('users.db')\n    cursor = conn.cursor()\n    query = 'SELECT * FROM users WHERE id = ?'\n    cursor.execute(query, (user_id,))\n    return cursor.fetchall()",
+        "diff": "",
+        "explanation": "- Using an environment variable to store the database file path eliminates the risk of exposing the file path.",
+        "confidence": "High"
+      }
+    ],
+    "logs": [
+      "Job started",
+      "Analyzing snippet...",
+      "Initializing snippet analysis pipeline...",
+      "Analyzing vulnerabilities inside code snippet...",
+      "Generating secure code solution via SageArmor AI...",
+      "Optimizing and validating generated fix...",
+      "Error: AI returned invalid content for snippet.python",
+      "Fix ready!",
+      "Job completed successfully"
+    ],
+    "pr_url": null,
+    "created_at": 1775101048.05496,
+    "summary": "Applied 1 secure remediations to the snippet.",
+    "vulnerabilities_partial": [],
+    "vulnerabilities_full": [],
+    "fixes": [],
+    "queue": []
+  },
+  "ff7e26c0-5f9d-40d2-9a75-cd0ed43a2c41": {
+    "job_id": "ff7e26c0-5f9d-40d2-9a75-cd0ed43a2c41",
+    "status": "completed",
+    "stage": "completed",
+    "progress": 100,
+    "results": [
+      {
+        "file_path": "snippet.python",
+        "original_code": "{\n  \"Version\": \"2012-10-17\",\n  \"Statement\": [\n    {\n      \"Effect\": \"Allow\",\n      \"Principal\": \"*\",\n      \"Action\": \"s3:GetObject\",\n      \"Resource\": \"arn:aws:s3:::my-bucket/*\"\n    }\n  ]\n}",
+        "fixed_code": "{\n  \"Version\": \"2012-10-17\",\n  \"Statement\": [\n    {\n      \"Effect\": \"Allow\",\n      \"Principal\": \"*\",\n      \"Action\": \"s3:GetObject\",\n      \"Resource\": \"arn:aws:s3:::my-bucket/*\"\n    }\n  ]\n}",
+        "diff": "",
+        "explanation": "- Replaced the '*' wildcard with a specific IAM user or role to restrict the policy\n- Blocked public access to the S3 bucket and enabled server-side encryption",
+        "confidence": "High"
+      }
+    ],
+    "logs": [
+      "Job started",
+      "Analyzing snippet...",
+      "Initializing snippet analysis pipeline...",
+      "Analyzing vulnerabilities inside code snippet...",
+      "Generating secure code solution via SageArmor AI...",
+      "Optimizing and validating generated fix...",
+      "Error: AI returned invalid content for snippet.python",
+      "Fix ready!",
+      "Job completed successfully"
+    ],
+    "pr_url": null,
+    "created_at": 1775101098.853438,
+    "summary": "Applied 2 secure remediations to the snippet.",
+    "vulnerabilities_partial": [],
+    "vulnerabilities_full": [],
+    "fixes": [],
+    "queue": []
+  },
+  "6521c943-4bb6-414d-a015-c2a4e975aa8f": {
+    "job_id": "6521c943-4bb6-414d-a015-c2a4e975aa8f",
+    "status": "completed",
+    "stage": "completed",
+    "progress": 100,
+    "results": [
+      {
+        "file_path": "snippet.python",
+        "original_code": "{\n  \"Version\": \"2012-10-17\",\n  \"Statement\": [\n    {\n      \"Effect\": \"Allow\",\n      \"Principal\": \"*\",\n      \"Action\": \"s3:GetObject\",\n      \"Resource\": \"arn:aws:s3:::my-bucket/*\"\n    }\n  ]\n}",
+        "fixed_code": "{\"Version\": \"2012-10-17\",\"Statement\": [{\"Effect\": \"Allow\",\"Principal\": \"arn:aws:iam::123456789012:user/my-user\",\"Action\": \"s3:GetObject\",\"Resource\": \"arn:aws:s3:::my-bucket/*\"}],\"Bucket\": \"my-bucket\",\"BlockPublicAcls\": true,\"IgnorePublicAcls\": true,\"ServerSideEncryptionConfiguration\": {\"Rule\": {\"ApplyServerSideEncryptionByDefault\": {\"SSEAlgorithm\": \"AES256\"}}}}",
+        "diff": "--- Original.py\n+++ Fixed.py\n@@ -1,11 +1 @@\n-{\n-  \"Version\": \"2012-10-17\",\n-  \"Statement\": [\n-    {\n-      \"Effect\": \"Allow\",\n-      \"Principal\": \"*\",\n-      \"Action\": \"s3:GetObject\",\n-      \"Resource\": \"arn:aws:s3:::my-bucket/*\"\n-    }\n-  ]\n-}+{\"Version\": \"2012-10-17\",\"Statement\": [{\"Effect\": \"Allow\",\"Principal\": \"arn:aws:iam::123456789012:user/my-user\",\"Action\": \"s3:GetObject\",\"Resource\": \"arn:aws:s3:::my-bucket/*\"}],\"Bucket\": \"my-bucket\",\"BlockPublicAcls\": true,\"IgnorePublicAcls\": true,\"ServerSideEncryptionConfiguration\": {\"Rule\": {\"ApplyServerSideEncryptionByDefault\": {\"SSEAlgorithm\": \"AES256\"}}}}",
+        "explanation": "- Replaced the '*' wildcard with a specific IAM user or role to restrict access to the S3 bucket\n- Blocked public access to the S3 bucket and enabled server-side encryption",
+        "confidence": "High"
+      }
+    ],
+    "logs": [
+      "Job started",
+      "Analyzing snippet...",
+      "Initializing snippet analysis pipeline...",
+      "Analyzing vulnerabilities inside code snippet...",
+      "Generating secure code solution via SageArmor AI...",
+      "Optimizing and validating generated fix...",
+      "Applying security fix to frontend editor...",
+      "Fix ready!",
+      "Job completed successfully"
+    ],
+    "pr_url": null,
+    "created_at": 1775101121.904911,
+    "summary": "Applied 2 secure remediations to the snippet.",
+    "vulnerabilities_partial": [],
+    "vulnerabilities_full": [],
+    "fixes": [],
+    "queue": [],
+    "modified_files": "{\"Version\": \"2012-10-17\",\"Statement\": [{\"Effect\": \"Allow\",\"Principal\": \"arn:aws:iam::123456789012:user/my-user\",\"Action\": \"s3:GetObject\",\"Resource\": \"arn:aws:s3:::my-bucket/*\"}],\"Bucket\": \"my-bucket\",\"BlockPublicAcls\": true,\"IgnorePublicAcls\": true,\"ServerSideEncryptionConfiguration\": {\"Rule\": {\"ApplyServerSideEncryptionByDefault\": {\"SSEAlgorithm\": \"AES256\"}}}}"
+  },
+  "b795de3c-294c-41fa-a127-c0c13fb1e77e": {
+    "job_id": "b795de3c-294c-41fa-a127-c0c13fb1e77e",
+    "status": "completed",
+    "stage": "completed",
+    "progress": 100,
+    "results": [
+      {
+        "file_path": "snippet.python",
+        "original_code": "{\n  \"IpProtocol\": \"tcp\",\n  \"FromPort\": 22,\n  \"ToPort\": 22,\n  \"IpRanges\": [\n    { \"CidrIp\": \"0.0.0.0/0\" }\n  ]\n}",
+        "fixed_code": "{\"IpProtocol\": \"tcp\", \"FromPort\": 22, \"ToPort\": 22, \"IpRanges\": [{ \"CidrIp\": \"192.168.1.0/24\" }]}",
+        "diff": "--- Original.py\n+++ Fixed.py\n@@ -1,8 +1 @@\n-{\n-  \"IpProtocol\": \"tcp\",\n-  \"FromPort\": 22,\n-  \"ToPort\": 22,\n-  \"IpRanges\": [\n-    { \"CidrIp\": \"0.0.0.0/0\" }\n-  ]\n-}+{\"IpProtocol\": \"tcp\", \"FromPort\": 22, \"ToPort\": 22, \"IpRanges\": [{ \"CidrIp\": \"192.168.1.0/24\" }]}",
+        "explanation": "- Restricted SSH access to a specific IP range",
+        "confidence": "High"
+      }
+    ],
+    "logs": [
+      "Job started",
+      "Analyzing snippet...",
+      "Initializing snippet analysis pipeline...",
+      "Analyzing vulnerabilities inside code snippet...",
+      "Generating secure code solution via SageArmor AI...",
+      "Optimizing and validating generated fix...",
+      "Fix ready!",
+      "Job completed successfully"
+    ],
+    "pr_url": null,
+    "created_at": 1775101169.036007,
+    "summary": "Applied 1 secure remediations to the snippet.",
+    "vulnerabilities_partial": [],
+    "vulnerabilities_full": [],
+    "fixes": [],
+    "queue": []
+  },
+  "4acf06f8-de48-467f-895c-5798d4d42efe": {
+    "job_id": "4acf06f8-de48-467f-895c-5798d4d42efe",
+    "status": "completed",
+    "stage": "completed",
+    "progress": 100,
+    "results": [
+      {
+        "file_path": "snippet.python",
+        "original_code": "{\n  \"IpProtocol\": \"tcp\",\n  \"FromPort\": 22,\n  \"ToPort\": 22,\n  \"IpRanges\": [\n    { \"CidrIp\": \"0.0.0.0/0\" }\n  ]\n}",
+        "fixed_code": "{\"IpProtocol\": \"tcp\", \"FromPort\": 22, \"ToPort\": 22, \"IpRanges\": [{ \"CidrIp\": \"192.168.1.0/24\" }]}",
+        "diff": "--- Original.py\n+++ Fixed.py\n@@ -1,8 +1 @@\n-{\n-  \"IpProtocol\": \"tcp\",\n-  \"FromPort\": 22,\n-  \"ToPort\": 22,\n-  \"IpRanges\": [\n-    { \"CidrIp\": \"0.0.0.0/0\" }\n-  ]\n-}+{\"IpProtocol\": \"tcp\", \"FromPort\": 22, \"ToPort\": 22, \"IpRanges\": [{ \"CidrIp\": \"192.168.1.0/24\" }]}",
+        "explanation": "- Restricted SSH access to a specific IP range",
+        "confidence": "High"
+      }
+    ],
+    "logs": [
+      "Job started",
+      "Analyzing snippet...",
+      "Initializing snippet analysis pipeline...",
+      "Analyzing vulnerabilities inside code snippet...",
+      "Generating secure code solution via SageArmor AI...",
+      "Optimizing and validating generated fix...",
+      "Applying security fix to frontend editor...",
+      "Fix ready!",
+      "Job completed successfully"
+    ],
+    "pr_url": null,
+    "created_at": 1775101180.405536,
+    "summary": "Applied 1 secure remediations to the snippet.",
+    "vulnerabilities_partial": [],
+    "vulnerabilities_full": [],
+    "fixes": [],
+    "queue": [],
+    "modified_files": "{\"IpProtocol\": \"tcp\", \"FromPort\": 22, \"ToPort\": 22, \"IpRanges\": [{ \"CidrIp\": \"192.168.1.0/24\" }]}"
+  },
+  "41944aa5-6a87-49e5-9178-a8cb63ad56e1": {
+    "job_id": "41944aa5-6a87-49e5-9178-a8cb63ad56e1",
+    "status": "completed",
+    "stage": "completed",
+    "progress": 100,
+    "results": [
+      {
+        "file_path": "snippet.python",
+        "original_code": "{\n  \"Version\": \"2012-10-17\",\n  \"Statement\": [\n    {\n      \"Effect\": \"Allow\",\n      \"Principal\": \"*\",\n      \"Action\": \"s3:GetObject\",\n      \"Resource\": \"arn:aws:s3:::my-bucket/*\"\n    }\n  ]\n}",
+        "fixed_code": "{\n  \"Version\": \"2012-10-17\",\n  \"Statement\": [\n    {\n      \"Effect\": \"Allow\",\n      \"Principal\": \"*\",\n      \"Action\": \"s3:GetObject\",\n      \"Resource\": \"arn:aws:s3:::my-bucket/*\"\n    }\n  ]\n}",
+        "diff": "",
+        "explanation": "- Restricted the policy to only allow the specified IAM user to perform the 's3:GetObject' action, reducing the attack surface.",
+        "confidence": "High"
+      }
+    ],
+    "logs": [
+      "Job started",
+      "Analyzing snippet...",
+      "Initializing snippet analysis pipeline...",
+      "Analyzing vulnerabilities inside code snippet...",
+      "Generating secure code solution via SageArmor AI...",
+      "Optimizing and validating generated fix...",
+      "Error: AI returned invalid content for snippet.python",
+      "Fix ready!",
+      "Job completed successfully"
+    ],
+    "pr_url": null,
+    "created_at": 1775101236.669425,
+    "summary": "Applied 1 secure remediations to the snippet.",
+    "vulnerabilities_partial": [],
+    "vulnerabilities_full": [],
+    "fixes": [],
+    "queue": []
+  },
+  "7c47bbf6-31d2-404a-8b79-009594a7ec80": {
+    "job_id": "7c47bbf6-31d2-404a-8b79-009594a7ec80",
+    "status": "completed",
+    "stage": "completed",
+    "progress": 100,
+    "results": [
+      {
+        "file_path": "snippet.python",
+        "original_code": "{\n  \"BucketEncryption\": null\n}",
+        "fixed_code": "{\"BucketEncryption\": \"aws:s3:ServerSideEncryption:aws:kms:KeyID\"}",
+        "diff": "--- Original.py\n+++ Fixed.py\n@@ -1,3 +1 @@\n-{\n-  \"BucketEncryption\": null\n-}+{\"BucketEncryption\": \"aws:s3:ServerSideEncryption:aws:kms:KeyID\"}",
+        "explanation": "- Set BucketEncryption to use server-side encryption with a KMS key to eliminate hardcoded secrets",
+        "confidence": "High"
+      }
+    ],
+    "logs": [
+      "Job started",
+      "Analyzing snippet...",
+      "Initializing snippet analysis pipeline...",
+      "Analyzing vulnerabilities inside code snippet...",
+      "Generating secure code solution via SageArmor AI...",
+      "Optimizing and validating generated fix...",
+      "Fix ready!",
+      "Job completed successfully"
+    ],
+    "pr_url": null,
+    "created_at": 1775101271.381323,
+    "summary": "Applied 1 secure remediations to the snippet.",
+    "vulnerabilities_partial": [],
+    "vulnerabilities_full": [],
+    "fixes": [],
+    "queue": []
+  },
+  "31525b15-c428-4072-af74-a4314c16fb36": {
+    "job_id": "31525b15-c428-4072-af74-a4314c16fb36",
+    "status": "completed",
+    "stage": "completed",
+    "progress": 100,
+    "results": [
+      {
+        "file_path": "snippet.python",
+        "original_code": "{\n  \"BucketEncryption\": null\n}",
+        "fixed_code": "{\"BucketEncryption\": \"aws:s3:ServerSideEncryption:aws:kms:KeyID\"}",
+        "diff": "--- Original.py\n+++ Fixed.py\n@@ -1,3 +1 @@\n-{\n-  \"BucketEncryption\": null\n-}+{\"BucketEncryption\": \"aws:s3:ServerSideEncryption:aws:kms:KeyID\"}",
+        "explanation": "- Set 'BucketEncryption' to use server-side encryption with a KMS key to eliminate hardcoded secrets",
+        "confidence": "High"
+      }
+    ],
+    "logs": [
+      "Job started",
+      "Analyzing snippet...",
+      "Initializing snippet analysis pipeline...",
+      "Analyzing vulnerabilities inside code snippet...",
+      "Generating secure code solution via SageArmor AI...",
+      "Optimizing and validating generated fix...",
+      "Applying security fix to frontend editor...",
+      "Fix ready!",
+      "Job completed successfully"
+    ],
+    "pr_url": null,
+    "created_at": 1775101281.2805948,
+    "summary": "Applied 1 secure remediations to the snippet.",
+    "vulnerabilities_partial": [],
+    "vulnerabilities_full": [],
+    "fixes": [],
+    "queue": [],
+    "modified_files": "{\"BucketEncryption\": \"aws:s3:ServerSideEncryption:aws:kms:KeyID\"}"
+  },
+  "a53b2c31-9311-4d8d-a7d4-9a7994132112": {
+    "job_id": "a53b2c31-9311-4d8d-a7d4-9a7994132112",
+    "status": "completed",
+    "stage": "completed",
+    "progress": 100,
+    "results": [
+      {
+        "file_path": "snippet.python",
+        "original_code": "import os\nimport sqlite3\n\ndef get_user(user_id):\n    # Vulnerable to SQL injection\n    conn = sqlite3.connect('users.db')\n    cursor = conn.cursor()\n    query = \"SELECT * FROM users WHERE id = \" + user_id\n    cursor.execute(query)\n    return cursor.fetchall()\n",
+        "fixed_code": "import os\nimport sqlite3\n\ndef get_user(user_id):\n    # Vulnerable to SQL injection\n    conn = sqlite3.connect('users.db')\n    cursor = conn.cursor()\n    query = \"SELECT * FROM users WHERE id = \" + user_id\n    cursor.execute(query)\n    return cursor.fetchall()\n",
+        "diff": "",
+        "explanation": "- Using a parameterized query with a tuple of values eliminates the risk of SQL injection.",
+        "confidence": "High"
+      }
+    ],
+    "logs": [
+      "Job started",
+      "Analyzing snippet...",
+      "Initializing snippet analysis pipeline...",
+      "Analyzing vulnerabilities inside code snippet...",
+      "Generating secure code solution via SageArmor AI...",
+      "Optimizing and validating generated fix...",
+      "Error: AI returned invalid content for snippet.python",
+      "Fix ready!",
+      "Job completed successfully"
+    ],
+    "pr_url": null,
+    "created_at": 1775101337.314518,
+    "summary": "Applied 1 secure remediations to the snippet.",
+    "vulnerabilities_partial": [],
+    "vulnerabilities_full": [],
+    "fixes": [],
+    "queue": []
+  },
+  "58f61ce9-ce22-4322-a3ab-36418ef38218": {
+    "job_id": "58f61ce9-ce22-4322-a3ab-36418ef38218",
+    "status": "completed",
+    "stage": "completed",
+    "progress": 100,
+    "results": [
+      {
+        "file_path": "snippet.python",
+        "original_code": "import os\nimport sqlite3\n\ndef get_user(user_id):\n    # Vulnerable to SQL injection\n    conn = sqlite3.connect('users.db')\n    cursor = conn.cursor()\n    query = \"SELECT * FROM users WHERE id = \" + user_id\n    cursor.execute(query)\n    return cursor.fetchall()\n",
+        "fixed_code": "import os\nimport sqlite3\ndef get_user(user_id):\n    conn = sqlite3.connect('users.db')\n    cursor = conn.cursor()\n    cursor.execute('SELECT * FROM users WHERE id = ?', (user_id,))\n    return cursor.fetchall()",
+        "diff": "--- Original.py\n+++ Fixed.py\n@@ -1,10 +1,7 @@\n import os\n import sqlite3\n-\n def get_user(user_id):\n-    # Vulnerable to SQL injection\n     conn = sqlite3.connect('users.db')\n     cursor = conn.cursor()\n-    query = \"SELECT * FROM users WHERE id = \" + user_id\n-    cursor.execute(query)\n-    return cursor.fetchall()\n+    cursor.execute('SELECT * FROM users WHERE id = ?', (user_id,))\n+    return cursor.fetchall()",
+        "explanation": "- Using a parameterized query with a tuple of values eliminates the risk of SQL injection.",
+        "confidence": "High"
+      }
+    ],
+    "logs": [
+      "Job started",
+      "Analyzing snippet...",
+      "Initializing snippet analysis pipeline...",
+      "Analyzing vulnerabilities inside code snippet...",
+      "Generating secure code solution via SageArmor AI...",
+      "Optimizing and validating generated fix...",
+      "Applying security fix to frontend editor...",
+      "Fix ready!",
+      "Job completed successfully"
+    ],
+    "pr_url": null,
+    "created_at": 1775101345.801399,
+    "summary": "Applied 1 secure remediations to the snippet.",
+    "vulnerabilities_partial": [],
+    "vulnerabilities_full": [],
+    "fixes": [],
+    "queue": [],
+    "modified_files": "import os\nimport sqlite3\ndef get_user(user_id):\n    conn = sqlite3.connect('users.db')\n    cursor = conn.cursor()\n    cursor.execute('SELECT * FROM users WHERE id = ?', (user_id,))\n    return cursor.fetchall()"
+  }
+}
