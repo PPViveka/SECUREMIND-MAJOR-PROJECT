@@ -23,6 +23,7 @@ load_dotenv()
 from .prompt_builder import build_security_prompt
 from .github_commenter import post_pr_review
 from .attack_intelligence import build_attack_intelligence, build_copilot_prompt
+from .code_graph import build_code_graph, merge_with_heuristic_graph
 from .repo_selective_scan import selective_repo_scan
 from .sast_scanner import SASTScanner
 from .autofix_engine import start_autofix_job
@@ -762,7 +763,13 @@ def attack_path(event, context):
 
         context_text = body.get('code', '')
         intelligence = build_attack_intelligence(vulnerabilities, context_text)
-        graph = intelligence.get('attack_graph', {})
+        heuristic_graph = intelligence.get('attack_graph', {})
+
+        # Step 4: AST-derived attack graph (falls back to heuristic if AST empty)
+        vuln_fn_names = [v.get('function_name', '') for v in vulnerabilities if v.get('function_name')]
+        ast_graph = build_code_graph(context_text, vuln_function_names=vuln_fn_names or None)
+        graph = merge_with_heuristic_graph(ast_graph, heuristic_graph)
+
         return _json_response(200, {
             "attack_graph": {
                 "nodes": graph.get('nodes', []),
@@ -770,6 +777,7 @@ def attack_path(event, context):
             },
             "attack_paths": graph.get('attack_paths', []),
             "summary": intelligence.get('summary', {}),
+            "ast_derived": graph.get('ast_derived', False),
         })
     except Exception as e:
         print(f"attack_path error: {str(e)}")
@@ -898,6 +906,11 @@ def repo_scan(event, context):
         vulnerabilities = analysis_result.get('vulnerabilities', []) if isinstance(analysis_result, dict) else []
         intelligence = build_attack_intelligence(vulnerabilities, combined_context)
 
+        # Step 4: AST-derived attack graph for repo scan
+        vuln_fn_names = [v.get('function_name', '') for v in vulnerabilities if v.get('function_name')]
+        ast_graph = build_code_graph(combined_context, vuln_function_names=vuln_fn_names or None)
+        merged_graph = merge_with_heuristic_graph(ast_graph, intelligence.get('attack_graph', {}))
+
         return _json_response(200, {
             "repo_stats": scan_bundle.get('repo_stats', {}),
             "keywords": scan_bundle.get('keywords', []),
@@ -910,7 +923,7 @@ def repo_scan(event, context):
             ],
             "vulnerabilities": vulnerabilities,
             "risk_ranking": intelligence.get('risk_ranking', []),
-            "attack_graph": intelligence.get('attack_graph', {}),
+            "attack_graph": merged_graph,
             "breach_simulation": intelligence.get('breach_simulation', {}),
             "summary": intelligence.get('summary', {}),
             "analysis_mode": analysis_result.get('analysis_mode', 'model') if isinstance(analysis_result, dict) else 'model',
