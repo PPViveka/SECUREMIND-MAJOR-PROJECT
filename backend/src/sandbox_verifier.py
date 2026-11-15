@@ -353,6 +353,68 @@ class SandboxVerifier:
             duration_ms=duration_ms,
         )
 
+    def verify(
+        self,
+        source_code: str,
+        function_name: str,
+        cwe_id: str = "",
+        sink_line: int = 1,
+    ) -> Dict[str, Any]:
+        """
+        Unified verification interface for patches and functions.
+        Returns a dict matching the API response format:
+        {
+            "verification_status": "verified" | "unconfirmed",
+            "verified": bool,
+            "dynamic_trace": {
+                "sink_reached": bool,
+                "reached_sink": bool,
+                "sink_line": int,
+                "executed_lines": [...],
+                "attempts_used": int,
+                "duration_ms": float,
+                "error": ...
+            }
+        }
+        """
+        from .sast_scanner import SASTScanner
+        # If the code no longer matches any vulnerable patterns, the vulnerability is eliminated
+        sast_hits = SASTScanner.scan_code(source_code)
+        if not sast_hits:
+            return {
+                "verification_status": "unconfirmed",
+                "verified": False,
+                "dynamic_trace": {
+                    "sink_reached": False,
+                    "reached_sink": False,
+                    "sink_line": sink_line,
+                    "executed_lines": [],
+                    "attempts_used": 1,
+                    "duration_ms": 0.0,
+                    "error": None,
+                },
+            }
+
+        exec_res = self.verify_vulnerability(
+            function_code=source_code,
+            function_name=function_name,
+            sink_line=sink_line,
+            issue_title=cwe_id or "Security Vulnerability",
+        )
+        return {
+            "verification_status": exec_res.status,
+            "verified": exec_res.verified,
+            "dynamic_trace": {
+                "sink_reached": exec_res.reached_sink,
+                "reached_sink": exec_res.reached_sink,
+                "sink_line": exec_res.sink_line,
+                "executed_lines": exec_res.executed_lines,
+                "attempts_used": exec_res.attempts_used,
+                "duration_ms": exec_res.duration_ms,
+                "error": exec_res.error,
+            },
+        }
+
 
 def apply_verification_gate(
     vulnerabilities: List[Dict[str, Any]],

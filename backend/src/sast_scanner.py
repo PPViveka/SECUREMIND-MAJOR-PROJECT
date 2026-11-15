@@ -302,3 +302,7 @@ class SASTScanner:
             'missing_validation': 'Add input validation: type checks, length limits, and format validation.',
         }
         return suggestions.get(vuln_type, 'Review and fix this security issue.')
+
+    def scan(self, code: str, file_path: str = '<input>') -> List[Dict[str, Any]]:
+        """Instance alias for scan_code."""
+        return self.scan_code(code, file_path=file_path)
