@@ -13,42 +13,64 @@ export class DiagnosticsManager {
 		this.fixRangeMap.clear();
 
 		return vulnerabilities.map((vuln, idx) => {
-			// Keep diagnostics line-wide so quick-fix lightbulb is consistently available.
-			const range = new vscode.Range(
-				new vscode.Position(vuln.line, 0),
-				new vscode.Position(vuln.line, 1000)
-			);
+			const isFileLevel = vuln.line === null;
+			// If line is null, treat as file-level diagnostic without pinning to line 0 code span
+			const range = isFileLevel
+				? new vscode.Range(new vscode.Position(0, 0), new vscode.Position(0, 0))
+				: new vscode.Range(new vscode.Position(vuln.line as number, 0), new vscode.Position(vuln.line as number, 1000));
 
-			const isVerified = Boolean(vuln.verified);
-			// Verified findings keep their high severity (Error); unconfirmed findings are demoted to Warning
-			const severity = isVerified
-				? this.mapSeverity(vuln.severity)
-				: vscode.DiagnosticSeverity.Warning;
+			const verdict = vuln.verification?.verdict ?? vuln.verification_status;
+			const verificationLabel = verdict === 'verified' || vuln.verified
+				? '[Confirmed]'
+				: verdict === 'refuted'
+				? '[Refuted]'
+				: verdict === 'pending'
+				? '[Pending]'
+				: '[Unverified]';
 
-			const badge = isVerified ? '🛡️ [Verified]' : '⚠️ [Unconfirmed]';
-			const traceNote = isVerified && vuln.dynamic_trace?.sink_reached
-				? ` [Exploit Reached Sink Line ${vuln.dynamic_trace.sink_line || '✓'}]`
+			const isValidatedPatch = vuln.patch_status === 'validated_patch' || vuln.validated_patch === true;
+			const patchLabel = isValidatedPatch
+				? '[Validated Patch]'
+				: (vuln.remediation && vuln.remediation.trim() !== '')
+				? '[Unvalidated Patch]'
 				: '';
+
+			const traceLabel = vuln.verified && vuln.dynamic_trace?.sink_reached
+				? `[Exploit sink reached${vuln.dynamic_trace.sink_line ? ` at line ${vuln.dynamic_trace.sink_line}` : ''}]`
+				: '';
+
+			const prefixes = [
+				isFileLevel ? '[File-level]' : '',
+				verificationLabel,
+				patchLabel,
+				traceLabel,
+			].filter(Boolean).join(' ');
+
+			const severity = this.mapSeverity(vuln.severity);
 
 			const diagnostic = new vscode.Diagnostic(
 				range,
-				`${badge} ${vuln.title}: ${vuln.description}${traceNote}`,
+				`${prefixes} ${vuln.title}: ${vuln.description}`.trim(),
 				severity
 			);
+			diagnostic.source = vuln.severity;
 
-			const key = `${uri.toString()}#${vuln.line}:${idx}`;
+			const key = `${uri.toString()}#${vuln.finding_id || `${vuln.line ?? 'file'}:${idx}`}`;
 
 			// Code for Quick Fix (includes key for lookup)
 			diagnostic.code = `sage-armor-fix:${key}`;
-			const fixRange = new vscode.Range(
-				new vscode.Position(vuln.line, Math.max(0, vuln.column || 0)),
-				new vscode.Position(vuln.endLine, Math.max(0, vuln.endColumn || vuln.column || 0))
-			);
+			if (!isFileLevel && vuln.line !== null) {
+				const endLine = vuln.endLine !== null ? vuln.endLine : vuln.line;
+				const fixRange = new vscode.Range(
+					new vscode.Position(vuln.line, Math.max(0, vuln.column || 0)),
+					new vscode.Position(endLine, Math.max(0, vuln.endColumn || vuln.column || 0))
+				);
+				this.fixRangeMap.set(key, fixRange);
+			}
 
 			// Store remediation/details for Quick Fix + Hover
 			this.remediationMap.set(key, vuln.remediation);
 			this.detailsMap.set(key, vuln);
-			this.fixRangeMap.set(key, fixRange);
 
 			return diagnostic;
 		});

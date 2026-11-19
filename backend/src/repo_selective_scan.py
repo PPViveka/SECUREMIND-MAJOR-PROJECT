@@ -39,6 +39,13 @@ STOPWORDS = {
 
 
 def _run_cmd(args, cwd=None, env=None):
+    if env is None:
+        env = {
+            'PATH': os.environ.get('PATH', '/usr/bin:/bin'),
+            'HOME': os.environ.get('HOME', tempfile.gettempdir()),
+            'LANG': 'C.UTF-8',
+            'GIT_TERMINAL_PROMPT': '0',
+        }
     return subprocess.run(
         args,
         cwd=cwd,
@@ -51,9 +58,11 @@ def _run_cmd(args, cwd=None, env=None):
 
 def _is_allowed_repo_url(repo_url):
     parsed = urlparse(repo_url)
-    if parsed.scheme != 'https':
+    if parsed.scheme != 'https' or parsed.username or parsed.password:
         return False
-    return parsed.netloc.lower().endswith('github.com')
+    if parsed.port not in (None, 443):
+        return False
+    return parsed.hostname.lower() in {'github.com', 'www.github.com'} if parsed.hostname else False
 
 
 def _clone_repository(repo_url, target_dir, token=None, branch=None):
@@ -69,8 +78,12 @@ def _clone_repository(repo_url, target_dir, token=None, branch=None):
         cmd += ['--branch', branch, '--single-branch']
     cmd += [repo_url, target_dir]
 
-    env = os.environ.copy()
-    env['GIT_TERMINAL_PROMPT'] = '0'
+    env = {
+        'PATH': os.environ.get('PATH', '/usr/bin:/bin'),
+        'HOME': os.environ.get('HOME', tempfile.gettempdir()),
+        'LANG': 'C.UTF-8',
+        'GIT_TERMINAL_PROMPT': '0',
+    }
 
     result = _run_cmd(cmd, env=env)
     if result.returncode != 0:
@@ -279,6 +292,8 @@ import requests
 from urllib.parse import urlparse
 
 def parse_github_url(url):
+    if not _is_allowed_repo_url(url):
+        raise ValueError('Only exact https://github.com repository URLs are allowed')
     parsed = urlparse(url)
     path = parsed.path.strip('/')
     if path.endswith('.git'):
@@ -300,13 +315,13 @@ def fetch_repo_tree(owner, repo, token=None, branch=None):
     if token:
         headers["Authorization"] = f"token {token}"
 
-    res = requests.get(url, headers=headers)
+    res = requests.get(url, headers=headers, allow_redirects=False, timeout=15)
     
     # Fallback to 'main' or 'master' if HEAD fails (sometimes happens on certain repository configurations)
     if res.status_code != 200 and branch == "HEAD":
-        res = requests.get(f"https://api.github.com/repos/{owner}/{repo}/git/trees/main?recursive=1", headers=headers)
+        res = requests.get(f"https://api.github.com/repos/{owner}/{repo}/git/trees/main?recursive=1", headers=headers, allow_redirects=False, timeout=15)
         if res.status_code != 200:
-            res = requests.get(f"https://api.github.com/repos/{owner}/{repo}/git/trees/master?recursive=1", headers=headers)
+            res = requests.get(f"https://api.github.com/repos/{owner}/{repo}/git/trees/master?recursive=1", headers=headers, allow_redirects=False, timeout=15)
 
     if res.status_code != 200:
         raise Exception(f"GitHub API error: {res.text}")
@@ -379,7 +394,7 @@ def selective_repo_scan(repo_url, query, token=None, branch=None, top_k=3):
     def fetch_and_score(file):
         try:
             blob_url = f"https://api.github.com/repos/{owner}/{repo}/git/blobs/{file['sha']}"
-            res = requests.get(blob_url, headers=headers)
+            res = requests.get(blob_url, headers=headers, allow_redirects=False, timeout=15)
             
             if res.status_code == 200:
                 content = res.text[:4000]

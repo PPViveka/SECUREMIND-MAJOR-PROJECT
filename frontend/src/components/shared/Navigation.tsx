@@ -1,5 +1,5 @@
 import { Link, useLocation } from 'react-router-dom';
-import { Shield, Sparkles, UserPlus, Home, LogIn } from 'lucide-react';
+import { Shield, Sparkles, Home } from 'lucide-react';
 import { motion } from 'motion/react';
 
 export function Navigation() {
@@ -8,8 +8,6 @@ export function Navigation() {
   const navItems = [
     { path: '/', label: 'Home', icon: Home },
     { path: '/scanner', label: 'Scanner', icon: Sparkles },
-    { path: '/login', label: 'Login', icon: LogIn },
-    { path: '/signup', label: 'Sign Up', icon: UserPlus },
   ];
 
   return (

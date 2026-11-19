@@ -5,8 +5,8 @@ import { useEffect, useState } from 'react';
 // Components
 import { Navigation } from './components/shared/Navigation';
 import LandingPage from './pages/LandingPage';
-import AuthPage from './pages/AuthPage';
 import ScannerPage from './pages/ScannerPage';
+import AuthPage from './pages/AuthPage';
 
 /* ── Global Animated Background ── */
 function AnimatedBackground() {

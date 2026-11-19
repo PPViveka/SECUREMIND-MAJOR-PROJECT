@@ -2,28 +2,41 @@ import axios, { AxiosInstance } from 'axios';
 import { SettingsManager } from './settings';
 
 export interface Vulnerability {
+	finding_id?: string;
+	schema_version?: string;
 	title: string;
 	description: string;
 	severity: 'Critical' | 'High' | 'Medium' | 'Low';
-	line: number;
+	line: number | null;
 	column: number;
-	endLine: number;
+	endLine: number | null;
 	endColumn: number;
 	attack_vector: string;
 	attack_scenario: string;
 	remediation: string;
 	remediation_description: string;
 	verified?: boolean;
-	verification_status?: 'verified' | 'unconfirmed';
-	dynamic_trace?: any;
-	cwe_id?: string;
-	function_name?: string;
+	verification_status?: 'verified' | 'refuted' | 'inconclusive' | 'not_applicable' | 'pending' | 'unconfirmed';
+	verification?: { verdict?: Vulnerability['verification_status']; reason?: string };
+	patch_status?: 'validated_patch' | 'unverified_draft' | 'none';
+	validated_patch?: boolean;
+	is_file_level?: boolean;
+	range?: { start?: number; end?: number };
+	dynamic_trace?: {
+		sink_reached?: boolean;
+		sink_line?: number | string;
+		[key: string]: unknown;
+	};
 }
 
 export interface ReviewResponse {
 	vulnerabilities: Vulnerability[];
 	language: string;
 	analysis_mode: string;
+	job_id?: string;
+	status?: string;
+	schema_version?: string;
+	degraded?: boolean;
 }
 
 type RawVulnerability = Partial<Vulnerability> & {
@@ -33,6 +46,13 @@ type RawVulnerability = Partial<Vulnerability> & {
 	suggested_fix?: string;
 	remediation?: string | { patch?: string; description?: string };
 	matched_code?: string;
+	verified?: boolean;
+	verification_status?: 'verified' | 'refuted' | 'inconclusive' | 'not_applicable' | 'pending' | 'unconfirmed';
+	verification?: Vulnerability['verification'];
+	patch_status?: 'validated_patch' | 'unverified_draft' | 'none';
+	validated_patch?: boolean;
+	range?: Vulnerability['range'];
+	dynamic_trace?: Vulnerability['dynamic_trace'];
 };
 
 export function normalizeReviewResponse(data: any, fallbackLanguage: string): ReviewResponse {
@@ -55,29 +75,58 @@ export function normalizeReviewResponse(data: any, fallbackLanguage: string): Re
 				? (remediationObj.description ?? '')
 				: '';
 
-		const line = typeof v.line === 'number' ? Math.max(0, v.line - 1) : 0;
-		const column = typeof v.column === 'number' ? Math.max(0, v.column - 1) : 0;
-		const endLineRaw = typeof v.endLine === 'number'
+		const hasExplicitLine =
+			typeof v.range?.start === 'number' ||
+			typeof v.line === 'number' ||
+			typeof (v as any).start_line === 'number';
+
+		const rawStart = typeof v.range?.start === 'number'
+			? v.range.start
+			: typeof v.line === 'number'
+			? v.line
+			: typeof (v as any).start_line === 'number'
+			? (v as any).start_line
+			: null;
+
+		const rawEnd = typeof v.range?.end === 'number'
+			? v.range.end
+			: typeof v.endLine === 'number'
 			? v.endLine
 			: typeof (v as any).end_line === 'number'
 			? (v as any).end_line
-			: line + 1;
-		const endColumnRaw = typeof v.endColumn === 'number'
-			? v.endColumn
-			: typeof (v as any).end_column === 'number'
-			? (v as any).end_column
-			: column + 1;
-		const endLine = Math.max(0, endLineRaw - 1);
-		const endColumn = Math.max(0, endColumnRaw - 1);
+			: rawStart;
 
-		const isVerified = Boolean(
-			v.verified ??
-			(v as any).status === 'verified' ??
-			(v as any).verification_status === 'verified'
-		);
-		const verificationStatus = isVerified ? 'verified' : 'unconfirmed';
+		const line = hasExplicitLine && rawStart !== null && !isNaN(rawStart)
+			? Math.max(0, rawStart - 1)
+			: null;
+
+		const endLine = line !== null && rawEnd !== null && !isNaN(rawEnd)
+			? Math.max(0, rawEnd - 1)
+			: line;
+
+		const column = typeof v.column === 'number' ? Math.max(0, v.column - 1) : 0;
+		const endColumn = typeof v.endColumn === 'number'
+			? Math.max(0, v.endColumn - 1)
+			: typeof (v as any).end_column === 'number'
+			? Math.max(0, (v as any).end_column - 1)
+			: column + 1;
+
+		const isFileLevel = line === null;
+
+		const isValidatedPatch =
+			v.patch_status === 'validated_patch' ||
+			v.validated_patch === true ||
+			(v as any).verified_patch === true;
+
+		const patchStatus: Vulnerability['patch_status'] = isValidatedPatch
+			? 'validated_patch'
+			: (remediationPatch || v.suggested_fix)
+			? 'unverified_draft'
+			: 'none';
 
 		return {
+			finding_id: v.finding_id,
+			schema_version: v.schema_version,
 			title: v.title ?? v.issue ?? 'Security issue',
 			description: v.description ?? v.explanation ?? 'Potential vulnerability detected.',
 			severity: (v.severity as Vulnerability['severity']) ?? 'Medium',
@@ -85,16 +134,18 @@ export function normalizeReviewResponse(data: any, fallbackLanguage: string): Re
 			column,
 			endLine,
 			endColumn,
+			is_file_level: isFileLevel,
 			attack_vector: v.attack_vector ?? 'Unknown attack vector',
 			attack_scenario: v.attack_scenario ?? v.poc_exploit_scenario ?? 'No scenario provided',
 			remediation: remediationPatch || v.suggested_fix || 'Apply input validation and secure coding practices.',
 			remediation_description:
 				remediationDescription || 'Use the proposed fix and re-run scan to verify remediation.',
-			verified: isVerified,
-			verification_status: verificationStatus,
-			dynamic_trace: (v as any).dynamic_trace,
-			cwe_id: (v as any).cwe_id,
-			function_name: (v as any).function_name,
+			verified: v.verified,
+			verification_status: v.verification?.verdict ?? v.verification_status ?? (v.verified ? 'verified' : 'unconfirmed'),
+			verification: v.verification,
+			patch_status: patchStatus,
+			validated_patch: isValidatedPatch,
+			dynamic_trace: v.dynamic_trace,
 		};
 	});
 
@@ -102,6 +153,10 @@ export function normalizeReviewResponse(data: any, fallbackLanguage: string): Re
 		vulnerabilities,
 		language: data?.language ?? fallbackLanguage,
 		analysis_mode: data?.analysis_mode ?? 'unknown',
+		job_id: data?.job_id,
+		status: data?.status,
+		schema_version: data?.schema_version,
+		degraded: Boolean(data?.degraded),
 	};
 }
 
@@ -142,7 +197,12 @@ export class ExtensionClient {
 		});
 	}
 
-	async reviewCode(code: string, language: string): Promise<ReviewResponse> {
+	async reviewCode(
+		code: string,
+		language: string,
+		mode: string = this.settingsManager.scanMode,
+		asyncVerify = false
+	): Promise<ReviewResponse> {
 		try {
 			const validation = this.settingsManager.validateSettings();
 			if (validation) {
@@ -154,11 +214,52 @@ export class ExtensionClient {
 			const response = await this.client.post<any>('/review', {
 				code,
 				language,
+				router_mode: mode,
+				async_verify: asyncVerify,
 			});
 
 			return normalizeReviewResponse(response.data, language);
 		} catch (error: any) {
 			throw new Error(mapBackendError(error, this.settingsManager.backendUrl));
+		}
+	}
+
+	async getReviewStatus(jobId: string): Promise<any> {
+		try {
+			this.client.defaults.baseURL = this.settingsManager.backendUrl;
+			const res = await this.client.get(`/review/status?job_id=${encodeURIComponent(jobId)}`);
+			return res.data;
+		} catch (error: any) {
+			throw new Error(mapBackendError(error, this.settingsManager.backendUrl));
+		}
+	}
+
+	async pollVerificationJob(jobId: string, timeoutMs = 15000, intervalMs = 500): Promise<ReviewResponse> {
+		const startTime = Date.now();
+		while (Date.now() - startTime < timeoutMs) {
+			const job = await this.getReviewStatus(jobId);
+			if (job?.status === 'completed' && job.result) {
+				return normalizeReviewResponse(job.result, job.language || 'python');
+			}
+			if (job?.status === 'failed' || job?.status === 'cancelled') {
+				throw new Error(job.summary || `Async verification ${job.status}`);
+			}
+			await new Promise((resolve) => setTimeout(resolve, intervalMs));
+		}
+		throw new Error('Verification polling timed out');
+	}
+
+	async getBackendHealth(): Promise<{ status: string; degraded: boolean; reason?: string; provider?: string; model?: string }> {
+		try {
+			this.client.defaults.baseURL = this.settingsManager.backendUrl;
+			const res = await this.client.get('/healthz');
+			return res.data;
+		} catch (error: any) {
+			return {
+				status: 'offline',
+				degraded: true,
+				reason: mapBackendError(error, this.settingsManager.backendUrl),
+			};
 		}
 	}
 
@@ -178,6 +279,95 @@ export class ExtensionClient {
 		} catch (error) {
 			console.error('Connection test failed:', error);
 			return false;
+		}
+	}
+
+	async getAttackPath(code: string, language = 'python'): Promise<any> {
+		try {
+			this.client.defaults.baseURL = this.settingsManager.backendUrl;
+			const res = await this.client.post('/attack-path', { code, language });
+			return res.data;
+		} catch (error: any) {
+			throw new Error(mapBackendError(error, this.settingsManager.backendUrl));
+		}
+	}
+
+	async getRiskScore(vulnerabilities: any[], code = ''): Promise<any> {
+		try {
+			this.client.defaults.baseURL = this.settingsManager.backendUrl;
+			const res = await this.client.post('/risk-score', { vulnerabilities, code });
+			return res.data;
+		} catch (error: any) {
+			throw new Error(mapBackendError(error, this.settingsManager.backendUrl));
+		}
+	}
+
+	async askCopilot(question: string, vulnerabilities: any[] = [], code = ''): Promise<any> {
+		try {
+			this.client.defaults.baseURL = this.settingsManager.backendUrl;
+			const res = await this.client.post('/copilot', { question, vulnerabilities, code });
+			return res.data;
+		} catch (error: any) {
+			throw new Error(mapBackendError(error, this.settingsManager.backendUrl));
+		}
+	}
+
+	async startRepoScan(repoUrl: string, query = '', branch?: string, topK = 3): Promise<any> {
+		try {
+			this.client.defaults.baseURL = this.settingsManager.backendUrl;
+			const res = await this.client.post('/repo-scan/start', {
+				repo_url: repoUrl,
+				query,
+				branch,
+				top_k: topK,
+			});
+			return res.data;
+		} catch (error: any) {
+			throw new Error(mapBackendError(error, this.settingsManager.backendUrl));
+		}
+	}
+
+	async getRepoScanStatus(jobId: string): Promise<any> {
+		try {
+			this.client.defaults.baseURL = this.settingsManager.backendUrl;
+			const res = await this.client.get(`/repo-scan/status?job_id=${encodeURIComponent(jobId)}`);
+			return res.data;
+		} catch (error: any) {
+			throw new Error(mapBackendError(error, this.settingsManager.backendUrl));
+		}
+	}
+
+	async cancelRepoScan(jobId: string): Promise<any> {
+		try {
+			this.client.defaults.baseURL = this.settingsManager.backendUrl;
+			const res = await this.client.post('/repo-scan/cancel', { job_id: jobId });
+			return res.data;
+		} catch (error: any) {
+			throw new Error(mapBackendError(error, this.settingsManager.backendUrl));
+		}
+	}
+
+	async startAutofix(repoUrl: string, vulnerabilities: any[], mode = 'suggest'): Promise<any> {
+		try {
+			this.client.defaults.baseURL = this.settingsManager.backendUrl;
+			const res = await this.client.post('/repo-autofix/start', {
+				repo_url: repoUrl,
+				vulnerabilities,
+				mode,
+			});
+			return res.data;
+		} catch (error: any) {
+			throw new Error(mapBackendError(error, this.settingsManager.backendUrl));
+		}
+	}
+
+	async getAutofixStatus(jobId: string): Promise<any> {
+		try {
+			this.client.defaults.baseURL = this.settingsManager.backendUrl;
+			const res = await this.client.get(`/repo-autofix/status?job_id=${encodeURIComponent(jobId)}`);
+			return res.data;
+		} catch (error: any) {
+			throw new Error(mapBackendError(error, this.settingsManager.backendUrl));
 		}
 	}
 

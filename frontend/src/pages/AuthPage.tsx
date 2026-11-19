@@ -1,11 +1,32 @@
 import { useState } from 'react';
-import { Shield, Mail, Lock, User, Check, ArrowRight } from 'lucide-react';
+import { Shield, Mail, Lock, User, Check, ArrowRight, AlertCircle } from 'lucide-react';
 import { PageTransition } from '../components/shared/PageTransition';
 import { motion, AnimatePresence } from 'motion/react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
+import { auth } from '../services/auth';
 
 export default function AuthPage({ mode = 'signup' }: { mode?: 'login' | 'signup' }) {
   const [isLogin, setIsLogin] = useState(mode === 'login');
+  const [name, setName] = useState('');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const navigate = useNavigate();
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    setError(null);
+
+    const result = isLogin
+      ? auth.login(email, password)
+      : auth.signup(name, email, password);
+
+    if (result.success) {
+      navigate('/scanner');
+    } else {
+      setError(result.error || 'Authentication failed');
+    }
+  };
 
   const features = [
     'Real-time vulnerability scanning',
@@ -107,7 +128,14 @@ export default function AuthPage({ mode = 'signup' }: { mode?: 'login' | 'signup
                   <div className="relative flex justify-center text-sm"><span className="px-4 bg-[#0A0F1C] text-gray-400">Or use email</span></div>
                 </div>
 
-                <form onSubmit={(e) => { e.preventDefault(); window.location.href='/scanner'; }} className="space-y-5">
+                {error && (
+                  <div className="mb-4 p-3 rounded-lg bg-red-500/10 border border-red-500/30 text-red-300 text-sm flex items-center gap-2">
+                    <AlertCircle className="w-4 h-4 shrink-0 text-red-400" />
+                    <span>{error}</span>
+                  </div>
+                )}
+
+                <form onSubmit={handleSubmit} className="space-y-5">
                   <AnimatePresence mode="wait">
                     {!isLogin && (
                       <motion.div
@@ -121,6 +149,8 @@ export default function AuthPage({ mode = 'signup' }: { mode?: 'login' | 'signup
                           <input
                             type="text"
                             required
+                            value={name}
+                            onChange={(e) => setName(e.target.value)}
                             className="w-full bg-white/5 border border-white/10 rounded-lg px-12 py-3 text-white placeholder-gray-500 focus:border-cyan-400 focus:outline-none focus:ring-2 focus:ring-cyan-400/20 transition-all"
                             placeholder="John Doe"
                           />
@@ -136,6 +166,8 @@ export default function AuthPage({ mode = 'signup' }: { mode?: 'login' | 'signup
                       <input
                         type="email"
                         required
+                        value={email}
+                        onChange={(e) => setEmail(e.target.value)}
                         className="w-full bg-white/5 border border-white/10 rounded-lg px-12 py-3 text-white placeholder-gray-500 focus:border-cyan-400 focus:outline-none focus:ring-2 focus:ring-cyan-400/20 transition-all"
                         placeholder="john@example.com"
                       />
@@ -149,6 +181,8 @@ export default function AuthPage({ mode = 'signup' }: { mode?: 'login' | 'signup
                       <input
                         type="password"
                         required
+                        value={password}
+                        onChange={(e) => setPassword(e.target.value)}
                         className="w-full bg-white/5 border border-white/10 rounded-lg px-12 py-3 text-white placeholder-gray-500 focus:border-cyan-400 focus:outline-none focus:ring-2 focus:ring-cyan-400/20 transition-all"
                         placeholder="••••••••"
                       />

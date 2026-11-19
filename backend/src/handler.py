@@ -4,7 +4,11 @@ import hmac
 import hashlib
 import re
 import time
+import uuid
 import requests
+from typing import Any, Dict, List, Optional, Tuple
+from datetime import datetime, timezone
+from urllib.parse import urlparse
 from dotenv import load_dotenv
 import boto3
 from .prompt_builder import build_security_prompt
@@ -25,16 +29,64 @@ from .github_commenter import post_pr_review
 from .attack_intelligence import build_attack_intelligence, build_copilot_prompt
 from .code_graph import build_code_graph, merge_with_heuristic_graph
 from .repo_selective_scan import selective_repo_scan
+from .repo_selective_scan import _is_allowed_repo_url
 from .sast_scanner import SASTScanner
 from .autofix_engine import start_autofix_job
 from .autofix_prompt import build_autofix_prompt
+from .finding_schema import anchor_findings, normalize_findings
+from .finding_schema import SCHEMA_VERSION
+from .llm_provider import create_provider, redact_secrets
+from .job_manager import (
+    create_job,
+    get_job,
+    update_job,
+    update_job_progress,
+    mark_completed,
+    mark_failed,
+    submit_job,
+    record_stage_timing,
+    record_observability,
+    add_job_event,
+)
+
+
+def _get_feature_flags(body=None):
+    flags = {
+        "cache": os.getenv("FEATURE_CACHE", "true").lower() in ("true", "1", "yes"),
+        "cascade": os.getenv("FEATURE_CASCADE", "true").lower() in ("true", "1", "yes"),
+        "model": os.getenv("FEATURE_MODEL", "true").lower() in ("true", "1", "yes"),
+        "verification": os.getenv("FEATURE_VERIFICATION", "true").lower() in ("true", "1", "yes"),
+        "taint": os.getenv("FEATURE_TAINT", "true").lower() in ("true", "1", "yes"),
+        "autofix": os.getenv("FEATURE_AUTOFIX", "true").lower() in ("true", "1", "yes"),
+    }
+    if isinstance(body, dict) and isinstance(body.get("features"), dict):
+        for k, v in body["features"].items():
+            if k in flags:
+                flags[k] = bool(v)
+    return flags
 
 load_dotenv()
+
+SUPPORTED_LANGUAGES = {
+    'python', 'javascript', 'typescript', 'java', 'ruby', 'rust', 'sql',
+    'cpp', 'c', 'csharp', 'go', 'kotlin', 'php', 'swift', 'terraform',
+    'yaml', 'json', 'mixed', 'repository',
+}
 
 # Pick up Gemini Key from `.env`
 # gemini_api_key = os.getenv('GEMINI_API_KEY')
 nvidia_api_key = os.getenv('NVIDIA_API_KEY')
 nvidia_model = os.getenv('NVIDIA_MODEL', 'meta/llama3-8b-instruct')
+
+
+def _current_model_id():
+    """Model id for the active provider, read at call time so values from .env apply."""
+    provider = _get_model_provider()
+    if provider == 'nvidia':
+        return os.getenv('NVIDIA_MODEL', 'meta/llama3-8b-instruct')
+    if provider == 'gemini':
+        return os.getenv('GEMINI_MODEL', 'gemini-3.5-flash-lite')
+    return os.getenv('MODEL_ID', '')
 # Initialize Bedrock client
 # In Lambda, boto3 natively picks up credentials and region from the IAM role.
 # For local testing, it will pick up from the environment variables (.env).
@@ -46,16 +98,30 @@ nvidia_model = os.getenv('NVIDIA_MODEL', 'meta/llama3-8b-instruct')
 def _is_truthy(value):
     return str(value or '').strip().lower() in {'1', 'true', 'yes', 'on'}
 
+_DAILY_BUDGET_TRACKER = {
+    "date": None,
+    "tokens": 0,
+    "requests": 0,
+}
+MAX_DAILY_TOKENS = int(os.getenv("SAGEARMOR_MAX_DAILY_TOKENS", "200000"))
+
+def _get_system_health() -> dict:
+    import shutil
+    return {
+        "model_available": bool(os.getenv("NVIDIA_API_KEY") or os.getenv("AWS_ACCESS_KEY_ID") or os.getenv("MODEL_PROVIDER") == "mock"),
+        "docker_available": bool(shutil.which("docker")),
+        "github_available": bool(os.getenv("GITHUB_TOKEN")),
+        "disk_available": True,
+    }
+
 
 def _get_model_provider():
-    explicit = (os.getenv('MODEL_PROVIDER') or '').strip().lower()
-    has_nvidia = bool(os.getenv('NVIDIA_API_KEY'))
-    has_gemini = bool(os.getenv('GEMINI_API_KEY'))
-    if explicit in {'nvidia', 'gemini', 'bedrock'}:
+    explicit = (os.getenv('LLM_PROVIDER') or os.getenv('MODEL_PROVIDER') or '').strip().lower()
+    if explicit in {'nvidia', 'gemini', 'bedrock', 'mock', 'recorded'}:
         return explicit
-    if has_nvidia:
-        return 'nvidia'
-    return 'gemini' if has_gemini else 'bedrock'
+    if explicit:
+        raise ValueError('MODEL_PROVIDER must be one of nvidia, bedrock, gemini, mock, or recorded')
+    return 'bedrock'
 
 
 # def _gemini_model_candidates():
@@ -257,12 +323,27 @@ def _get_bedrock_client():
 #     return text
 
 
+def _safe_log(msg):
+    print(redact_secrets(str(msg)))
+
+
 def _json_response(status_code, payload):
+    payload = dict(payload) if isinstance(payload, dict) else {"data": payload}
+    if "error" in payload and payload["error"]:
+        payload["error"] = redact_secrets(str(payload["error"]))
+    payload.setdefault("schema_version", SCHEMA_VERSION)
+    payload.setdefault("analysis_mode", "unknown")
+    payload.setdefault("job_id", None)
+    request_id = payload.setdefault("request_id", str(uuid.uuid4()))
+    payload.setdefault("degraded", payload.get("analysis_mode") in {"sast-local", "local-fallback", "cascade-clean"})
+    payload.setdefault("telemetry", {})
+    payload.setdefault("usage", {"estimated": True, "total_tokens": 0})
     return {
         "statusCode": status_code,
         "headers": {
             "Access-Control-Allow-Origin": "*",
             "Access-Control-Allow-Credentials": True,
+            "X-Request-ID": request_id,
         },
         "body": json.dumps(payload),
     }
@@ -273,6 +354,32 @@ def _parse_body(event):
     if not body_str:
         body_str = '{}'
     return json.loads(body_str) if isinstance(body_str, str) else body_str
+
+
+def _max_code_size() -> int:
+    try:
+        return max(1, int(os.getenv("MAX_CODE_SIZE_BYTES", str(1024 * 1024))))
+    except (TypeError, ValueError):
+        return 1024 * 1024
+
+
+def healthz(event, context):
+    """Return non-sensitive service readiness information."""
+    import shutil
+
+    return _json_response(200, {
+        "status": "ok",
+        "schema_version": SCHEMA_VERSION,
+        "provider": _get_model_provider(),
+        "model": _current_model_id() or None,
+        "features": {
+            "sast": True,
+            "sandbox": bool(shutil.which("docker")),
+            "webhook_signatures": bool(os.getenv("GITHUB_WEBHOOK_SECRET")),
+        },
+        "cache": {"enabled": True},
+        "gate_calibration": {"status": "not_configured"},
+    })
 
 
 def _invoke_bedrock_json(prompt, max_tokens=600):
@@ -355,7 +462,7 @@ def _invoke_nvidia_json(prompt, max_tokens=2000):
     }
     
     url = "https://integrate.api.nvidia.com/v1/chat/completions"
-    response = requests.post(url, headers=headers, json=payload)
+    response = requests.post(url, headers=headers, json=payload, timeout=30)
     
     if response.status_code != 200:
         raise RuntimeError(f"NVIDIA API request failed: {response.status_code} - {response.text}")
@@ -383,7 +490,7 @@ def _invoke_nvidia_text(prompt, max_tokens=2000):
     }
     
     url = "https://integrate.api.nvidia.com/v1/chat/completions"
-    response = requests.post(url, headers=headers, json=payload)
+    response = requests.post(url, headers=headers, json=payload, timeout=30)
     
     if response.status_code != 200:
         raise RuntimeError(f"NVIDIA API request failed: {response.status_code} - {response.text}")
@@ -393,21 +500,11 @@ def _invoke_nvidia_text(prompt, max_tokens=2000):
 
 
 def _invoke_model_json(prompt, max_tokens=600):
-    provider = _get_model_provider()
-    if provider == 'nvidia':
-        return _invoke_nvidia_json(prompt, max_tokens=max_tokens)
-    # elif provider == 'gemini':
-    #     return _invoke_gemini_json(prompt, max_tokens=max_tokens)
-    return _invoke_bedrock_json(prompt, max_tokens=max_tokens)
+    return create_provider(_get_model_provider()).complete_json(prompt, max_tokens=max_tokens)
 
 
 def _invoke_model_text(prompt, max_tokens=1200):
-    provider = _get_model_provider()
-    if provider == 'nvidia':
-        return _invoke_nvidia_text(prompt, max_tokens=max_tokens)
-    # elif provider == 'gemini':
-    #     return _invoke_gemini_text(prompt, max_tokens=max_tokens)
-    return _invoke_bedrock_text(prompt, max_tokens=max_tokens)
+    return create_provider(_get_model_provider()).complete(prompt, max_tokens=max_tokens).text.strip()
 
 
 def _local_static_review(code_snippet):
@@ -512,69 +609,260 @@ def _local_copilot_answer(question, intelligence, vulnerabilities=None):
 def _extract_vulnerabilities_for_advanced(body):
     vulnerabilities = body.get('vulnerabilities')
     if isinstance(vulnerabilities, list):
-        return vulnerabilities
+        normalized = normalize_findings(
+            vulnerabilities,
+            file_path=body.get('file', ''),
+            language=body.get('language', 'python'),
+        )
+    else:
+        code_snippet = body.get('code', '')
+        language = body.get('language', 'python')
+        if not code_snippet:
+            return []
 
-    code_snippet = body.get('code', '')
-    language = body.get('language', 'python')
-    if not code_snippet:
-        return []
+        prompt = build_security_prompt(code_snippet, language)
+        try:
+            analysis_result = _invoke_model_json(prompt)
+        except Exception as err:
+            _safe_log(f"[handler] Advanced endpoints using local fallback: {str(err)}")
+            analysis_result = _local_static_review(code_snippet)
+        
+        if isinstance(analysis_result, list):
+            vulns = analysis_result
+        else:
+            vulns = analysis_result.get('vulnerabilities', []) if isinstance(analysis_result, dict) else []
+        normalized = normalize_findings(vulns, language=language)
 
-    prompt = build_security_prompt(code_snippet, language)
-    try:
-        analysis_result = _invoke_model_json(prompt)
-    except Exception as err:
-        print(f"[handler] Advanced endpoints using local fallback: {str(err)}")
-        analysis_result = _local_static_review(code_snippet)
-    
-    if isinstance(analysis_result, list):
-        return analysis_result
-    return analysis_result.get('vulnerabilities', []) if isinstance(analysis_result, dict) else []
+    # Feed only active non-refuted findings into advanced views
+    active = [
+        v for v in normalized
+        if str(v.get("verification_status", "")).lower() not in ("refuted", "false_positive")
+        and not v.get("refuted")
+    ]
+    if body.get("verified_only"):
+        active = [v for v in active if v.get("verified") is True or str(v.get("verification_status", "")).lower() == "confirmed"]
+    return active
 
 def verify_signature(event):
     secret = os.getenv('GITHUB_WEBHOOK_SECRET')
     if not secret:
-        return True # Skip if not configured
+        return True
     
     headers = {k.lower(): v for k, v in event.get('headers', {}).items()}
     signature = headers.get('x-hub-signature-256')
     if not signature:
-        return True # Skip if not present
+        return False
     
     body = event.get('body', '{}')
-    
-    # Needs the raw byte string.
+    if not isinstance(body, str):
+        body = json.dumps(body, separators=(',', ':'))
+
     mac = hmac.new(secret.encode('utf-8'), body.encode('utf-8'), hashlib.sha256)
     expected_sig = "sha256=" + mac.hexdigest()
     
     return hmac.compare_digest(expected_sig, signature)
 
+def _execute_deep_pipeline_sync(
+    code_snippet: str,
+    language: str,
+    router_mode: str,
+    flags: Dict[str, bool],
+    initial_findings: Optional[List[Dict[str, Any]]] = None,
+    job_id: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    selective_scanner = SelectiveFunctionScanner()
+    if flags.get("cache", True):
+        partition = selective_scanner.partition_functions(
+            code_snippet,
+            language=language,
+            provider=_get_model_provider(),
+            model_id=_current_model_id(),
+            router_mode=router_mode,
+        )
+        cached_vulns = partition.get("cached_vulnerabilities", [])
+        funcs_to_scan = partition.get("functions_to_scan", [])
+    else:
+        from .function_cache import extract_functions
+        cached_vulns = []
+        funcs_to_scan = extract_functions(code_snippet, language)
+
+    if job_id:
+        record_stage_timing(job_id, "cache_partition", 10.0)
+
+    if flags.get("cascade", True):
+        cascade = CascadeEngine(cache=selective_scanner.cache)
+        triage = cascade.filter_and_triage(funcs_to_scan)
+        flagged_functions = triage.get("flagged_functions", [])
+    else:
+        flagged_functions = [
+            {
+                "name": f.get("name", "func"),
+                "code": f.get("code", ""),
+                "start_line": f.get("start_line", 1),
+                "end_line": f.get("end_line", 999999),
+                "sast_findings": [],
+            }
+            for f in funcs_to_scan
+        ]
+
+    new_vulns = []
+    if flagged_functions and flags.get("model", True):
+        targeted_code = (
+            CascadeEngine.build_targeted_prompt_context(flagged_functions, full_code=code_snippet)
+            if flagged_functions
+            else code_snippet
+        )
+        prompt = build_security_prompt(targeted_code, language)
+        start_t = time.time()
+        try:
+            model_res = _invoke_model_json(prompt, max_tokens=2048)
+            if isinstance(model_res, list):
+                new_vulns = model_res
+            elif isinstance(model_res, dict):
+                new_vulns = model_res.get('vulnerabilities', [])
+        except Exception as e:
+            _safe_log(f"[handler] Model call in deep pipeline failed: {e}")
+            new_vulns = _local_static_review(targeted_code).get('vulnerabilities', [])
+        if job_id:
+            record_stage_timing(job_id, "model_triage", (time.time() - start_t) * 1000.0)
+
+    # Anchor new findings first so line numbers and function names are resolved
+    new_vulns = anchor_findings(new_vulns, code_snippet)
+
+    # Merge / deduplicate SAST findings from flagged functions
+    for f_entry in flagged_functions:
+        for sf in f_entry.get("sast_findings", []):
+            sf_line = sf.get("line", 0)
+            sf_issue = (sf.get("issue") or "").lower()
+            matched = False
+            for v in new_vulns:
+                v_line = v.get("line", 0)
+                v_issue = (v.get("issue") or "").lower()
+                if (v_line == sf_line and v_line > 0) or (abs(v_line - sf_line) <= 2 and (v_issue in sf_issue or sf_issue in v_issue)):
+                    v.setdefault("remediation", sf.get("remediation"))
+                    v.setdefault("cwe", sf.get("cwe"))
+                    v["provenance"] = "hybrid"
+                    matched = True
+                    break
+            if not matched:
+                new_vulns.append(sf)
+
+    # Dynamic sandbox verification gate
+    verified_vulns_all = []
+    start_v = time.time()
+    for func in flagged_functions:
+        func_vulns = [
+            v for v in new_vulns
+            if (func.get("start_line", 1) <= v.get("line", 0) <= func.get("end_line", 999999))
+            or (v.get("function_name") == func.get("name"))
+        ]
+        if func_vulns:
+            if flags.get("verification", True):
+                func_vulns = apply_verification_gate(
+                    vulnerabilities=func_vulns,
+                    function_code=func["code"],
+                    function_name=func["name"],
+                    language=language,
+                )
+            else:
+                for fv in func_vulns:
+                    fv.setdefault("verification_status", "unverified")
+                    fv["verified"] = False
+            verified_vulns_all.extend(func_vulns)
+
+        if flags.get("cache", True):
+            selective_scanner.cache.set(
+                function_hash=func.get("cache_key", func.get("hash", "")),
+                function_name=func["name"],
+                language=language,
+                scan_result={"vulnerabilities": func_vulns},
+                original_start_line=func["start_line"],
+                tokens_used=150,
+                scan_duration_ms=50.0,
+                provider="model",
+            )
+
+    if job_id:
+        record_stage_timing(job_id, "sandbox_verification", (time.time() - start_v) * 1000.0)
+
+    # Combine with cached
+    combined = list(cached_vulns)
+    for v in verified_vulns_all:
+        if not any(cv.get('issue') == v.get('issue') and cv.get('line') == v.get('line') for cv in combined):
+            combined.append(v)
+
+    local_findings = _local_static_review(code_snippet).get('vulnerabilities', [])
+    for lf in local_findings:
+        if not any(c.get('issue') == lf.get('issue') and c.get('line') == lf.get('line') for c in combined):
+            combined.append(lf)
+
+    # Preserve initial finding IDs
+    if initial_findings:
+        id_map = {f.get("finding_id"): f for f in initial_findings if f.get("finding_id")}
+        issue_line_map = {(f.get("issue"), f.get("line")): f for f in initial_findings}
+        for v in combined:
+            target = None
+            if v.get("finding_id") in id_map:
+                target = id_map[v["finding_id"]]
+            elif (v.get("issue"), v.get("line")) in issue_line_map:
+                target = issue_line_map[(v.get("issue"), v.get("line"))]
+            
+            if target:
+                v["finding_id"] = target["finding_id"]
+                target.update(v)
+
+        for init_f in initial_findings:
+            if not any(c.get("finding_id") == init_f.get("finding_id") for c in combined):
+                combined.append(init_f)
+
+    return normalize_findings(combined, language=language)
+
+
 def review_code(event, context):
     try:
         # Validate webhook if signature is present
         if not verify_signature(event):
-            return {"statusCode": 401, "headers": {"Access-Control-Allow-Origin": "*"}, "body": json.dumps({"error": "Invalid GitHub webhook signature"})}
+            return _json_response(401, {"error": "Invalid GitHub webhook signature"})
 
         # Load the body
         body_str = event.get('body', '{}')
         if not body_str:
             body_str = '{}'
         body = json.loads(body_str) if isinstance(body_str, str) else body_str
+        job_id = body.get('job_id')
+
+        def _review_response(status_code, payload):
+            if job_id is not None and isinstance(payload, dict):
+                payload.setdefault("job_id", job_id)
+            return _json_response(status_code, payload)
+
         # Determine language context from dashboard toggle or fallback 
         language = body.get('language', 'python')
+        if str(language).lower() not in SUPPORTED_LANGUAGES:
+            return _review_response(400, {"error": "Unsupported language."})
         is_webhook = 'pull_request' in body
         
         # 1. Check if it's a GitHub Webhook event
         if 'pull_request' in body:
             action = body.get('action')
             if action and action not in ['opened', 'synchronize']:
-                return {"statusCode": 200, "headers": {"Access-Control-Allow-Origin": "*"}, "body": json.dumps({"msg": f"Skipping action {action}"})}
+                return _review_response(200, {"msg": f"Skipping action {action}"})
             
             diff_url = body['pull_request']['diff_url']
+            parsed_diff_url = urlparse(diff_url)
+            if not _is_allowed_repo_url(diff_url) and not (
+                parsed_diff_url.scheme == 'https'
+                and parsed_diff_url.hostname == 'api.github.com'
+                and parsed_diff_url.port in (None, 443)
+                and not parsed_diff_url.username
+                and not parsed_diff_url.password
+            ):
+                return _review_response(400, {"error": "Unapproved GitHub diff URL."})
             headers = {}
             if os.getenv('GITHUB_TOKEN'):
                 headers['Authorization'] = f"token {os.getenv('GITHUB_TOKEN')}"
                 
-            resp = requests.get(diff_url, headers=headers)
+            resp = requests.get(diff_url, headers=headers, allow_redirects=False, timeout=15)
             if resp.status_code != 200:
                 raise Exception(f"Failed to fetch PR diff: {resp.status_code}")
                 
@@ -602,11 +890,96 @@ def review_code(event, context):
             pr_number = None
             
         if not code_snippet:
-            return {"statusCode": 400, "headers": {"Access-Control-Allow-Origin": "*"}, "body": json.dumps({"error": "No code snippet provided."})}
+            return _review_response(400, {"error": "No code snippet provided."})
+        if len(code_snippet.encode("utf-8")) > _max_code_size():
+            return _review_response(413, {"error": "Code snippet exceeds the configured size limit."})
+
+        router_mode = body.get('router_mode', body.get('mode', 'balanced'))
+        flags = _get_feature_flags(body)
+
+        # Asynchronous verification request
+        if body.get('async_verify') or body.get('async'):
+            static_res = _local_static_review(code_snippet)
+            raw_vulns = static_res.get('vulnerabilities', [])
+            anchored_initial = normalize_findings(anchor_findings(raw_vulns, code_snippet), language=language)
+            for v in anchored_initial:
+                v['verification_status'] = 'pending'
+                v['verified'] = False
+
+            job_id = create_job(job_id)
+            add_job_event(job_id, "async_review_started", "Asynchronous scan and verification queued")
+            record_stage_timing(job_id, "static_scan", 12.0)
+            update_job_progress(job_id, "queued", 10, "Static analysis complete; queued for deep verification.")
+
+            def _async_worker():
+                try:
+                    upgraded = _execute_deep_pipeline_sync(
+                        code_snippet=code_snippet,
+                        language=language,
+                        router_mode=router_mode,
+                        flags=flags,
+                        initial_findings=anchored_initial,
+                        job_id=job_id,
+                    )
+                    mark_completed(
+                        job_id,
+                        f"Verification complete with {len(upgraded)} findings",
+                        {"vulnerabilities": upgraded, "status": "completed"}
+                    )
+                except Exception as exc:
+                    mark_failed(job_id, f"Async verification failed: {str(exc)}")
+
+            submit_job(_async_worker)
+            return _review_response(202, {
+                "job_id": job_id,
+                "status": "pending_verification",
+                "analysis_mode": "static-initial",
+                "vulnerabilities": anchored_initial,
+                "telemetry": {"fast_static": True, "job_id": job_id},
+            })
 
         # Step 1: Function slicing & fingerprint caching
         selective_scanner = SelectiveFunctionScanner()
-        partition = selective_scanner.partition_functions(code_snippet, language=language)
+        router_mode = body.get('router_mode', body.get('mode', 'balanced'))
+        if router_mode in {'default', 'model', None, ''}:
+            router_mode = 'balanced'
+        if router_mode not in {'rules-only', 'balanced', 'thorough'}:
+            return _review_response(400, {"error": "router_mode must be rules-only, balanced, or thorough"})
+        if router_mode == 'rules-only' or not flags.get("model", True):
+            rules_only = _local_static_review(code_snippet)
+            rules_only['analysis_mode'] = 'rules-only'
+            rules_only['vulnerabilities'] = normalize_findings(
+                rules_only.get('vulnerabilities', []), language=language,
+            )
+            return _review_response(200, rules_only)
+        try:
+            scan_budget = int(body.get('budget', -1))
+        except (TypeError, ValueError):
+            return _review_response(400, {"error": "budget must be an integer"})
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        if _DAILY_BUDGET_TRACKER["date"] != today:
+            _DAILY_BUDGET_TRACKER["date"] = today
+            _DAILY_BUDGET_TRACKER["tokens"] = 0
+            _DAILY_BUDGET_TRACKER["requests"] = 0
+
+        daily_exhausted = _DAILY_BUDGET_TRACKER["tokens"] >= MAX_DAILY_TOKENS
+        if scan_budget == 0 or daily_exhausted:
+            budget_result = _local_static_review(code_snippet)
+            budget_result['analysis_mode'] = 'budget-exhausted'
+            budget_result['degraded'] = True
+            budget_result['degraded_state'] = {"daily_budget_exhausted": daily_exhausted, "tokens_used": _DAILY_BUDGET_TRACKER["tokens"]}
+            budget_result['note'] = 'Model analysis skipped because the scan budget or daily budget is exhausted.'
+            budget_result['vulnerabilities'] = normalize_findings(
+                budget_result.get('vulnerabilities', []), language=language,
+            )
+            return _review_response(200, budget_result)
+        partition = selective_scanner.partition_functions(
+            code_snippet,
+            language=language,
+            provider=_get_model_provider(),
+            model_id=_current_model_id(),
+            router_mode=router_mode,
+        )
 
         cached_vulns = partition.get("cached_vulnerabilities", [])
         funcs_to_scan = partition.get("functions_to_scan", [])
@@ -645,7 +1018,9 @@ def review_code(event, context):
                 }
             else:
                 # LLM is invoked only for the flagged functions
-                if flagged_functions and partition.get("total_functions", 0) > 0:
+                if router_mode == 'thorough':
+                    targeted_code = code_snippet
+                elif flagged_functions and partition.get("total_functions", 0) > 0:
                     targeted_code = CascadeEngine.build_targeted_prompt_context(flagged_functions, full_code=code_snippet)
                 else:
                     targeted_code = code_snippet
@@ -657,10 +1032,28 @@ def review_code(event, context):
                 # Call AI model using unified invoker
                 try:
                     analysis_result = _invoke_model_json(prompt, max_tokens=2048)
+                    _DAILY_BUDGET_TRACKER["tokens"] += max(50, len(targeted_code) // 4)
+                    _DAILY_BUDGET_TRACKER["requests"] += 1
                 except Exception as e:
-                    print(f"[handler] AI invocation failed, using local fallback: {str(e)}")
+                    if body.get('require_model') is True or body.get('mode') == 'model':
+                        return _review_response(
+                            503,
+                            {
+                                "error": f"Model analysis required by mode '{router_mode}' failed: {str(e)}",
+                                "degraded": True,
+                                "degraded_state": {
+                                    "model_available": False,
+                                    "reason": str(e),
+                                },
+                                "vulnerabilities": [],
+                                "analysis_mode": "model-unavailable",
+                            },
+                        )
+                    _safe_log(f"[handler] AI invocation failed, using local fallback: {str(e)}")
                     analysis_result = _local_static_review(code_snippet)
                     scan_mode = analysis_result.get("analysis_mode", "sast-local")
+                    analysis_result["degraded"] = True
+                    analysis_result["degraded_state"] = {"model_available": False, "reason": str(e)}
 
                 # Normalize: Llama 3 may return a bare array or a dict with 'vulnerabilities' key
                 if isinstance(analysis_result, list):
@@ -672,11 +1065,27 @@ def review_code(event, context):
                 analysis_result.setdefault("analysis_mode", scan_mode)
                 scan_duration_ms = round((time.time() - start_scan_time) * 1000, 2)
                 new_vulns = analysis_result.get('vulnerabilities', [])
+                for model_finding in new_vulns:
+                    if isinstance(model_finding, dict):
+                        model_finding.setdefault('provenance', 'model')
+                new_vulns = anchor_findings(new_vulns, code_snippet)
 
-                # Ensure SAST findings from triage are included as ground-truth anchor
+                # Ensure SAST findings from triage are merged / deduplicated
                 for f_entry in flagged_functions:
                     for sf in f_entry.get("sast_findings", []):
-                        if not any(v.get("line") == sf.get("line") for v in new_vulns):
+                        sf_line = sf.get("line", 0)
+                        sf_issue = (sf.get("issue") or "").lower()
+                        matched = False
+                        for v in new_vulns:
+                            v_line = v.get("line", 0)
+                            v_issue = (v.get("issue") or "").lower()
+                            if (v_line == sf_line and v_line > 0) or (abs(v_line - sf_line) <= 2 and (v_issue in sf_issue or sf_issue in v_issue)):
+                                v.setdefault("remediation", sf.get("remediation"))
+                                v.setdefault("cwe", sf.get("cwe"))
+                                v["provenance"] = "hybrid"
+                                matched = True
+                                break
+                        if not matched:
                             new_vulns.append(sf)
 
                 # Step 3: Dynamic Sandbox Exploit Gate (Prove it's real)
@@ -688,14 +1097,21 @@ def review_code(event, context):
                 for func in flagged_functions:
                     func_vulns = [
                         v for v in new_vulns
-                        if func.get("start_line", 1) <= v.get("line", 0) <= func.get("end_line", 999999)
+                        if (func.get("start_line", 1) <= v.get("line", 0) <= func.get("end_line", 999999))
+                        or (v.get("function_name") == func.get("name"))
                     ]
                     if func_vulns:
-                        func_vulns = apply_verification_gate(
-                            vulnerabilities=func_vulns,
-                            function_code=func["code"],
-                            function_name=func["name"],
-                        )
+                        if flags.get("verification", True):
+                            func_vulns = apply_verification_gate(
+                                vulnerabilities=func_vulns,
+                                function_code=func["code"],
+                                function_name=func["name"],
+                                language=language,
+                            )
+                        else:
+                            for fv in func_vulns:
+                                fv.setdefault("verification_status", "unverified")
+                                fv["verified"] = False
                         for fv in func_vulns:
                             if fv.get("verified"):
                                 verified_count += 1
@@ -703,8 +1119,9 @@ def review_code(event, context):
                                 unconfirmed_count += 1
                         verified_vulns_all.extend(func_vulns)
 
+                    cache_kind = "model" if scan_mode == "model" else "rules_only"
                     selective_scanner.cache.set(
-                        function_hash=func["hash"],
+                        function_hash=func.get("cache_key", func["hash"]),
                         function_name=func["name"],
                         language=language,
                         scan_result={"vulnerabilities": func_vulns},
@@ -712,6 +1129,7 @@ def review_code(event, context):
                         tokens_used=150 if scan_mode == "model" else 0,
                         scan_duration_ms=scan_duration_ms,
                         provider=scan_mode,
+                        cache_kind=cache_kind,
                     )
 
                 # Catch any findings outside partitioned functions
@@ -734,24 +1152,63 @@ def review_code(event, context):
                 analysis_result['vulnerabilities'] = combined_vulns
                 analysis_result['telemetry'] = telemetry
 
+        # Always preserve deterministic local findings, merging without duplicates
+        local_findings = _local_static_review(code_snippet).get('vulnerabilities', [])
+        response_vulnerabilities = analysis_result.setdefault('vulnerabilities', [])
+        for finding in local_findings:
+            f_line = finding.get('line', 0)
+            f_issue = (finding.get('issue') or '').lower()
+            duplicate = any(
+                (existing.get('line') == f_line and existing.get('issue') == finding.get('issue'))
+                or (abs(existing.get('line', -999) - f_line) <= 2 and (f_issue in (existing.get('issue') or '').lower() or (existing.get('issue') or '').lower() in f_issue))
+                for existing in response_vulnerabilities
+            )
+            if not duplicate:
+                response_vulnerabilities.append(finding)
+
+            analysis_result['vulnerabilities'] = normalize_findings(
+                response_vulnerabilities,
+                language=language,
+            )
+
         # Fire-and-forget: post findings back to GitHub PR (webhook path only)
         if is_webhook and repo_full_name and pr_number:
             try:
                 post_pr_review(
                     repo_full_name,
                     pr_number,
-                    analysis_result.get('vulnerabilities', [])
+                    analysis_result.get('vulnerabilities', []),
+                    provider=os.getenv('LLM_PROVIDER') or os.getenv('MODEL_PROVIDER') or 'NVIDIA NIM',
+                    model=os.getenv('LLM_MODEL') or os.getenv('BEDROCK_MODEL_ID') or 'meta/llama3-8b-instruct',
+                    changed_files=body.get('changed_files'),
                 )
             except Exception as comment_err:
                 # Never block the response if commenting fails
-                print(f"[handler] PR comment failed (non-fatal): {str(comment_err)}")
+                _safe_log(f"[handler] PR comment failed (non-fatal): {str(comment_err)}")
 
-        return _json_response(200, analysis_result)
+        return _review_response(200, analysis_result)
     except Exception as e:
-        print(f"review_code error: {str(e)}")
         import traceback
         traceback.print_exc()
-        return _json_response(500, {"error": str(e)})
+        _safe_log(f"review_code failed: {e}")
+        return _json_response(500, {"error": "Internal server error"})
+
+
+def review_status(event, context):
+    try:
+        query_params = event.get('queryStringParameters', {}) or {}
+        job_id = query_params.get('job_id')
+        if not job_id:
+            return _json_response(400, {"error": "job_id query parameter is required"})
+
+        job = get_job(job_id)
+        if not job:
+            return _json_response(404, {"error": "Job not found"})
+
+        return _json_response(200, job)
+    except Exception as e:
+        print(f"review_status failed: {e}")
+        return _json_response(500, {"error": "Internal server error"})
 
 
 def attack_path(event, context):
@@ -774,6 +1231,7 @@ def attack_path(event, context):
             "attack_graph": {
                 "nodes": graph.get('nodes', []),
                 "edges": graph.get('edges', []),
+                "path_reason": graph.get('path_reason'),
             },
             "attack_paths": graph.get('attack_paths', []),
             "summary": intelligence.get('summary', {}),
@@ -831,9 +1289,16 @@ def copilot_chat(event, context):
         context_text = body.get('code', '')
         intelligence = build_attack_intelligence(vulnerabilities, context_text)
 
-        prompt = build_copilot_prompt(question, intelligence)
+        history = body.get('history') if isinstance(body.get('history'), list) else []
+        prompt = build_copilot_prompt(
+            question,
+            intelligence,
+            code=context_text,
+            language=body.get('language', ''),
+            history=history,
+        )
         try:
-            answer = _invoke_model_text(prompt)
+            answer = _invoke_model_text(prompt, max_tokens=1500)
             mode = "model"
             note = None
         except Exception as err:
@@ -903,13 +1368,19 @@ def repo_scan(event, context):
             print(f"[handler] Repo scan using local fallback: {str(err)}")
             analysis_result = _local_static_review(combined_context)
 
-        vulnerabilities = analysis_result.get('vulnerabilities', []) if isinstance(analysis_result, dict) else []
+        vulnerabilities = normalize_findings(
+            analysis_result.get('vulnerabilities', []) if isinstance(analysis_result, dict) else [],
+            language='python',
+        )
         intelligence = build_attack_intelligence(vulnerabilities, combined_context)
 
         # Step 4: AST-derived attack graph for repo scan
         vuln_fn_names = [v.get('function_name', '') for v in vulnerabilities if v.get('function_name')]
         ast_graph = build_code_graph(combined_context, vuln_function_names=vuln_fn_names or None)
         merged_graph = merge_with_heuristic_graph(ast_graph, intelligence.get('attack_graph', {}))
+
+        estimated_tokens = len(selected_files) * 250
+        cost_estimate_usd = round(estimated_tokens * 0.000002, 6)
 
         return _json_response(200, {
             "repo_stats": scan_bundle.get('repo_stats', {}),
@@ -926,6 +1397,10 @@ def repo_scan(event, context):
             "attack_graph": merged_graph,
             "breach_simulation": intelligence.get('breach_simulation', {}),
             "summary": intelligence.get('summary', {}),
+            "cost_estimate": {
+                "estimated_tokens": estimated_tokens,
+                "estimated_cost_usd": cost_estimate_usd,
+            },
             "analysis_mode": analysis_result.get('analysis_mode', 'model') if isinstance(analysis_result, dict) else 'model',
             "note": analysis_result.get('note') if isinstance(analysis_result, dict) else None,
         })
@@ -990,10 +1465,24 @@ def repo_scan_status(event, context):
         return _json_response(200, job)
         
     except Exception as e:
-        print(f"repo_scan_status error: {str(e)}")
-        import traceback
-        traceback.print_exc()
-        return _json_response(500, {"error": str(e)})
+        print("repo_scan_status failed")
+        return _json_response(500, {"error": "Internal server error"})
+
+
+def repo_scan_cancel(event, context):
+    try:
+        body = _parse_body(event)
+        job_id = body.get('job_id') or (event.get('queryStringParameters') or {}).get('job_id')
+        if not job_id:
+            return _json_response(400, {"error": "job_id is required"})
+        from .job_manager import cancel_job
+        job = cancel_job(job_id)
+        if not job:
+            return _json_response(404, {"error": "Job not found"})
+        return _json_response(200, job)
+    except Exception as e:
+        print(f"repo_scan_cancel error: {str(e)}")
+        return _json_response(500, {"error": "Unable to cancel job"})
 
 
 def repo_autofix_start(event, context):
@@ -1024,10 +1513,8 @@ def repo_autofix_start(event, context):
         return _json_response(200, {"job_id": job_id, "status": "started"})
         
     except Exception as e:
-        print(f"repo_autofix_start error: {str(e)}")
-        import traceback
-        traceback.print_exc()
-        return _json_response(500, {"error": str(e)})
+        print("repo_autofix_start failed")
+        return _json_response(500, {"error": "Internal server error"})
 
 
 def repo_autofix_status(event, context):

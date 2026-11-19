@@ -31,6 +31,34 @@ RISKY_SINKS = {
     "deserialize": ["pickle", "yaml.load", "loads", "unserialize"],
 }
 
+CACHE_RULE_VERSION = "rules-v1"
+CACHE_PROMPT_VERSION = "prompt-v1"
+
+
+def build_cache_key(
+    function_hash: str,
+    language: str = "python",
+    provider: str = "rules",
+    model_id: str = "",
+    router_mode: str = "balanced",
+    context_bundle: str = "",
+    rule_version: str = CACHE_RULE_VERSION,
+    prompt_version: str = CACHE_PROMPT_VERSION,
+) -> str:
+    """Build a cache identity that cannot cross analysis configurations."""
+    identity = {
+        "function": function_hash,
+        "context": hashlib.sha256((context_bundle or "").encode("utf-8")).hexdigest(),
+        "language": (language or "python").lower(),
+        "provider": provider or "rules",
+        "model": model_id or "",
+        "router": router_mode or "balanced",
+        "rules": rule_version,
+        "prompt": prompt_version,
+    }
+    digest = hashlib.sha256(json.dumps(identity, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+    return f"v2:{digest}"
+
 
 def normalize_code_for_hash(code_str: str) -> str:
     """
@@ -224,25 +252,45 @@ class FunctionScanCache:
     """
 
     def __init__(self, db_path: Optional[str] = None):
+        self._shared_conn = None
         if db_path is None:
-            base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            self.db_path = os.path.join(base_dir, ".sage_armor_cache.db")
+            configured_path = os.getenv("SAGEARMOR_CACHE_DB")
+            if configured_path:
+                self.db_path = configured_path
+            else:
+                base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+                self.db_path = os.path.join(base_dir, ".sage_armor_cache.db")
         else:
             self.db_path = db_path
+
+        if self.db_path == ":memory:":
+            self._shared_conn = sqlite3.connect(":memory:", timeout=10.0, check_same_thread=False)
+            self._shared_conn.row_factory = sqlite3.Row
 
         self._init_db()
 
     def _get_connection(self) -> sqlite3.Connection:
+        if self._shared_conn is not None:
+            return self._shared_conn
         conn = sqlite3.connect(self.db_path, timeout=10.0)
         conn.row_factory = sqlite3.Row
         return conn
+
+    def _close_conn(self, conn: sqlite3.Connection):
+        if self._shared_conn is not None and conn is self._shared_conn:
+            return
+        try:
+            conn.close()
+        except Exception:
+            pass
 
     def _init_db(self):
         conn = self._get_connection()
         try:
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS function_cache (
-                    function_hash TEXT PRIMARY KEY,
+                    function_hash TEXT,
+                    cache_kind TEXT DEFAULT 'model',
                     function_name TEXT,
                     language TEXT,
                     file_path TEXT,
@@ -253,19 +301,63 @@ class FunctionScanCache:
                     provider TEXT,
                     created_at TEXT,
                     last_accessed TEXT,
-                    hit_count INTEGER DEFAULT 0
+                    hit_count INTEGER DEFAULT 0,
+                    PRIMARY KEY (function_hash, cache_kind)
                 )
             """)
+            try:
+                conn.execute("ALTER TABLE function_cache ADD COLUMN cache_kind TEXT DEFAULT 'model'")
+            except sqlite3.OperationalError:
+                pass
+
+            # Detect legacy table with single-column primary key on function_hash only
+            cursor = conn.cursor()
+            cursor.execute("PRAGMA table_info(function_cache)")
+            pk_cols = [row[1] for row in cursor.fetchall() if row[5] > 0]
+            if pk_cols and "cache_kind" not in pk_cols:
+                conn.execute("ALTER TABLE function_cache RENAME TO _function_cache_old")
+                conn.execute("""
+                    CREATE TABLE function_cache (
+                        function_hash TEXT,
+                        cache_kind TEXT DEFAULT 'model',
+                        function_name TEXT,
+                        language TEXT,
+                        file_path TEXT,
+                        original_start_line INTEGER,
+                        scan_result TEXT,
+                        tokens_used INTEGER DEFAULT 0,
+                        scan_duration_ms REAL DEFAULT 0.0,
+                        provider TEXT,
+                        created_at TEXT,
+                        last_accessed TEXT,
+                        hit_count INTEGER DEFAULT 0,
+                        PRIMARY KEY (function_hash, cache_kind)
+                    )
+                """)
+                conn.execute("""
+                    INSERT OR IGNORE INTO function_cache (
+                        function_hash, cache_kind, function_name, language, file_path,
+                        original_start_line, scan_result, tokens_used, scan_duration_ms,
+                        provider, created_at, last_accessed, hit_count
+                    )
+                    SELECT function_hash, coalesce(cache_kind, 'model'), function_name, language, file_path,
+                        original_start_line, scan_result, tokens_used, scan_duration_ms,
+                        provider, created_at, last_accessed, hit_count
+                    FROM _function_cache_old
+                """)
+                conn.execute("DROP TABLE _function_cache_old")
+
             conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_cache_hash ON function_cache(function_hash)
+                CREATE INDEX IF NOT EXISTS idx_cache_hash_kind ON function_cache(function_hash, cache_kind)
             """)
             conn.commit()
         finally:
-            conn.close()
+            self._close_conn(conn)
 
-    def get(self, function_hash: str) -> Optional[Dict[str, Any]]:
+    def get(self, function_hash: str, cache_kind: str = "model") -> Optional[Dict[str, Any]]:
         """
-        Retrieves a cached scan result by function hash.
+        Retrieves a cached scan result by function hash and cache kind
+        (e.g. 'rules_only', 'model', 'verification').
         Increments hit_count and updates last_accessed.
         """
         now = datetime.now(timezone.utc).isoformat()
@@ -273,25 +365,30 @@ class FunctionScanCache:
         try:
             cursor = conn.cursor()
             cursor.execute(
-                "SELECT * FROM function_cache WHERE function_hash = ?",
-                (function_hash,),
+                "SELECT * FROM function_cache WHERE function_hash = ? AND cache_kind = ?",
+                (function_hash, cache_kind),
             )
             row = cursor.fetchone()
             if not row:
+                return None
+
+            # Fallback results written with provider="sast-local" or "rules-only" must not masquerade as model results
+            if cache_kind == "model" and row["provider"] in ("sast-local", "rules-only", "rules_only", "fallback"):
                 return None
 
             cursor.execute(
                 """
                 UPDATE function_cache 
                 SET hit_count = hit_count + 1, last_accessed = ? 
-                WHERE function_hash = ?
+                WHERE function_hash = ? AND cache_kind = ?
                 """,
-                (now, function_hash),
+                (now, function_hash, cache_kind),
             )
             conn.commit()
 
             return {
                 "function_hash": row["function_hash"],
+                "cache_kind": row["cache_kind"] if "cache_kind" in row.keys() else cache_kind,
                 "function_name": row["function_name"],
                 "language": row["language"],
                 "file_path": row["file_path"],
@@ -305,7 +402,7 @@ class FunctionScanCache:
                 "hit_count": row["hit_count"] + 1,
             }
         finally:
-            conn.close()
+            self._close_conn(conn)
 
     def set(
         self,
@@ -318,50 +415,79 @@ class FunctionScanCache:
         tokens_used: int = 0,
         scan_duration_ms: float = 0.0,
         provider: str = "rules_ai",
+        cache_kind: str = "model",
     ):
         """
-        Saves or updates a function's scan result in the cache.
+        Saves or updates a function's scan result in the cache, separating
+        rules-only, model, and verification entries.
         """
         now = datetime.now(timezone.utc).isoformat()
         serialized_result = json.dumps(scan_result)
 
         conn = self._get_connection()
         try:
-            conn.execute(
-                """
-                INSERT INTO function_cache (
-                    function_hash, function_name, language, file_path,
-                    original_start_line, scan_result, tokens_used,
-                    scan_duration_ms, provider, created_at, last_accessed, hit_count
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
-                ON CONFLICT(function_hash) DO UPDATE SET
-                    function_name = excluded.function_name,
-                    language = excluded.language,
-                    file_path = excluded.file_path,
-                    original_start_line = excluded.original_start_line,
-                    scan_result = excluded.scan_result,
-                    tokens_used = excluded.tokens_used,
-                    scan_duration_ms = excluded.scan_duration_ms,
-                    provider = excluded.provider,
-                    last_accessed = excluded.last_accessed
-                """,
-                (
-                    function_hash,
-                    function_name,
-                    language,
-                    file_path,
-                    original_start_line,
-                    serialized_result,
-                    tokens_used,
-                    scan_duration_ms,
-                    provider,
-                    now,
-                    now,
-                ),
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT 1 FROM function_cache WHERE function_hash = ? AND cache_kind = ?",
+                (function_hash, cache_kind),
             )
+            exists = cursor.fetchone()
+            if exists:
+                conn.execute(
+                    """
+                    UPDATE function_cache SET
+                        function_name = ?,
+                        language = ?,
+                        file_path = ?,
+                        original_start_line = ?,
+                        scan_result = ?,
+                        tokens_used = ?,
+                        scan_duration_ms = ?,
+                        provider = ?,
+                        last_accessed = ?
+                    WHERE function_hash = ? AND cache_kind = ?
+                    """,
+                    (
+                        function_name,
+                        language,
+                        file_path,
+                        original_start_line,
+                        serialized_result,
+                        tokens_used,
+                        scan_duration_ms,
+                        provider,
+                        now,
+                        function_hash,
+                        cache_kind,
+                    ),
+                )
+            else:
+                conn.execute(
+                    """
+                    INSERT INTO function_cache (
+                        function_hash, cache_kind, function_name, language, file_path,
+                        original_start_line, scan_result, tokens_used,
+                        scan_duration_ms, provider, created_at, last_accessed, hit_count
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+                    """,
+                    (
+                        function_hash,
+                        cache_kind,
+                        function_name,
+                        language,
+                        file_path,
+                        original_start_line,
+                        serialized_result,
+                        tokens_used,
+                        scan_duration_ms,
+                        provider,
+                        now,
+                        now,
+                    ),
+                )
             conn.commit()
         finally:
-            conn.close()
+            self._close_conn(conn)
 
     def get_metrics(self) -> Dict[str, Any]:
         """
@@ -387,7 +513,7 @@ class FunctionScanCache:
                 "estimated_time_saved_ms": round(row["time_saved_ms"], 2),
             }
         finally:
-            conn.close()
+            self._close_conn(conn)
 
     def clear(self):
         """Clears all entries from the cache."""
@@ -396,7 +522,26 @@ class FunctionScanCache:
             conn.execute("DELETE FROM function_cache")
             conn.commit()
         finally:
-            conn.close()
+            self._close_conn(conn)
+
+    def invalidate(self, function_hash: Optional[str] = None, provider: Optional[str] = None, cache_kind: Optional[str] = None) -> int:
+        """Delete matching cache entries and return the number removed."""
+        conn = self._get_connection()
+        try:
+            if function_hash and cache_kind:
+                cursor = conn.execute("DELETE FROM function_cache WHERE function_hash = ? AND cache_kind = ?", (function_hash, cache_kind))
+            elif function_hash:
+                cursor = conn.execute("DELETE FROM function_cache WHERE function_hash = ?", (function_hash,))
+            elif provider:
+                cursor = conn.execute("DELETE FROM function_cache WHERE provider = ?", (provider,))
+            elif cache_kind:
+                cursor = conn.execute("DELETE FROM function_cache WHERE cache_kind = ?", (cache_kind,))
+            else:
+                cursor = conn.execute("DELETE FROM function_cache")
+            conn.commit()
+            return cursor.rowcount
+        finally:
+            self._close_conn(conn)
 
 
 def adjust_line_offsets(
@@ -438,6 +583,11 @@ class SelectiveFunctionScanner:
         source_code: str,
         language: str = "python",
         file_path: str = "",
+        provider: str = "rules",
+        model_id: str = "",
+        router_mode: str = "balanced",
+        rule_version: str = CACHE_RULE_VERSION,
+        prompt_version: str = CACHE_PROMPT_VERSION,
     ) -> Dict[str, Any]:
         """
         Splits code into functions and partitions them into cache hits vs cache misses.
@@ -452,7 +602,17 @@ class SelectiveFunctionScanner:
         misses = 0
 
         for func in functions:
-            cached_entry = self.cache.get(func["hash"])
+            cache_key = build_cache_key(
+                func["hash"], language=language, provider=provider,
+                model_id=model_id, router_mode=router_mode,
+                context_bundle=source_code, rule_version=rule_version,
+                prompt_version=prompt_version,
+            )
+            func["cache_key"] = cache_key
+            cached_entry = self.cache.get(cache_key)
+            if cached_entry is None:
+                # Read pre-versioned entries during migration, but all new writes use v2.
+                cached_entry = self.cache.get(func["hash"])
             if cached_entry is not None:
                 # Cache hit!
                 hits += 1

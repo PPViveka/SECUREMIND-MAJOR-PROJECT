@@ -1,6 +1,10 @@
 import os
+import sys
 import tempfile
 import unittest
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
 from src.function_cache import (
     normalize_code_for_hash,
     compute_function_hash,
@@ -10,6 +14,7 @@ from src.function_cache import (
     FunctionScanCache,
     adjust_line_offsets,
     SelectiveFunctionScanner,
+    build_cache_key,
 )
 
 
@@ -35,6 +40,17 @@ class TestFunctionCache(unittest.TestCase):
 
         code3 = "def login(user):\n    return None"
         self.assertNotEqual(compute_function_hash(code1), compute_function_hash(code3))
+
+    def test_cache_key_separates_analysis_configuration(self):
+        function_hash = compute_function_hash("def foo(): pass")
+
+        python_key = build_cache_key(function_hash, language="python", provider="nvidia", model_id="model-a")
+        javascript_key = build_cache_key(function_hash, language="javascript", provider="nvidia", model_id="model-a")
+        model_key = build_cache_key(function_hash, language="python", provider="nvidia", model_id="model-b")
+
+        self.assertNotEqual(python_key, javascript_key)
+        self.assertNotEqual(python_key, model_key)
+        self.assertTrue(python_key.startswith("v2:"))
 
     def test_extract_python_functions(self):
         source = (
@@ -87,6 +103,28 @@ class TestFunctionCache(unittest.TestCase):
         self.assertEqual(funcs[0]["name"], "loginUser")
         self.assertIn("file", funcs[0]["risky_sinks"])
 
+    def test_cache_stores_rules_model_and_verification_separately(self):
+        h = compute_function_hash("def foo(): pass")
+        rules_res = {"vulnerabilities": [{"issue": "Rules SAST finding"}]}
+        model_res = {"vulnerabilities": [{"issue": "Model confirmed finding"}]}
+        verif_res = {"vulnerabilities": [{"issue": "Dynamically verified finding"}]}
+
+        self.cache.set(h, "foo", "python", rules_res, cache_kind="rules_only")
+        self.cache.set(h, "foo", "python", model_res, cache_kind="model")
+        self.cache.set(h, "foo", "python", verif_res, cache_kind="verification")
+
+        cached_rules = self.cache.get(h, cache_kind="rules_only")
+        cached_model = self.cache.get(h, cache_kind="model")
+        cached_verif = self.cache.get(h, cache_kind="verification")
+
+        self.assertIsNotNone(cached_rules)
+        self.assertIsNotNone(cached_model)
+        self.assertIsNotNone(cached_verif)
+
+        self.assertEqual(cached_rules["scan_result"]["vulnerabilities"][0]["issue"], "Rules SAST finding")
+        self.assertEqual(cached_model["scan_result"]["vulnerabilities"][0]["issue"], "Model confirmed finding")
+        self.assertEqual(cached_verif["scan_result"]["vulnerabilities"][0]["issue"], "Dynamically verified finding")
+
     def test_cache_set_and_get(self):
         h = compute_function_hash("def foo(): pass")
         result = {"vulnerabilities": [{"issue": "Test Vulnerability", "line": 1}]}
@@ -127,6 +165,13 @@ class TestFunctionCache(unittest.TestCase):
         self.assertEqual(metrics["total_cache_hits"], 2)
         self.assertEqual(metrics["estimated_tokens_saved"], 200)
         self.assertEqual(metrics["estimated_time_saved_ms"], 100.0)
+
+    def test_cache_invalidation_and_configured_path(self):
+        h = compute_function_hash("def invalidated(): pass")
+        self.cache.set(h, "invalidated", "python", {"vulnerabilities": []}, provider="mock")
+
+        self.assertEqual(self.cache.invalidate(provider="mock"), 1)
+        self.assertIsNone(self.cache.get(h))
 
     def test_adjust_line_offsets(self):
         vulns = [
@@ -173,6 +218,22 @@ class TestFunctionCache(unittest.TestCase):
         self.assertEqual(p2["cache_misses"], 1)
         self.assertEqual(p2["tokens_saved"], 80)
         self.assertEqual(p2["functions_to_scan"][0]["name"], "func_a")
+
+    def test_cache_hygiene_fallback_never_masquerades_as_model(self):
+        h = compute_function_hash("def fallback_func(): pass")
+        self.cache.set(
+            function_hash=h,
+            function_name="fallback_func",
+            language="python",
+            scan_result={"vulnerabilities": []},
+            original_start_line=1,
+            tokens_used=0,
+            provider="sast-local",
+            cache_kind="model",
+        )
+        # Should be rejected when queried as a model result
+        res = self.cache.get(h, cache_kind="model")
+        self.assertIsNone(res)
 
 
 if __name__ == "__main__":

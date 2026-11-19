@@ -1,29 +1,32 @@
-# Dependencies
-node_modules/
-venv/
-env/
+# Runtime state and secrets
 .env
+.env.*
+!.env.example
+jobs.json
+*.db
+*.db-*
+*.log
+backend/jobs.db
+backend/jobs.db-*
+backend/.sage_armor_cache.db
+backend/.sage_armor_cache.db-*
+backend/benchmarks/calibration_report.json
 
-# Python caches
+# Python
 __pycache__/
 *.py[cod]
-*$py.class
 .pytest_cache/
+.venv/
+venv/
 
-# SQLite & Cache databases
-*.db
-*.sqlite3
-.sage_armor_cache.db
-
-# Logs and temp files
-*.log
-jobs.json
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-pnpm-debug.log*
-
-# Build outputs
+# JavaScript dependencies and builds
+node_modules/
 dist/
 build/
+frontend/dist/
+extension/out/
 *.vsix
+
+# OS/editor metadata
+.DS_Store
+.vscode/

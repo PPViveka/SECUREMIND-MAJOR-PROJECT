@@ -29,6 +29,8 @@ export class AdvancedSettingsPanel {
 				await this.settings.setScanOnSave(!!msg.payload.scanOnSave);
 				await this.settings.setScanOnKeystroke(!!msg.payload.scanOnKeystroke);
 				await this.settings.setSeverityFilter(msg.payload.severityFilter || ['Critical', 'High', 'Medium']);
+				await this.settings.setScanMode(msg.payload.scanMode || 'balanced');
+				await this.settings.setDailyBudget(Number(msg.payload.dailyBudget) || 0);
 				vscode.window.showInformationMessage('Sage Armor settings saved');
 				this.panel!.webview.html = this.renderHtml();
 			}
@@ -70,6 +72,15 @@ button { margin-right: 8px; padding: 8px 12px; }
 <label>Backend URL</label>
 <input id="backendUrl" type="text" value="${this.settings.backendUrl}" />
 
+<label>Scan Mode</label>
+<select id="scanMode">
+<option value="rules-only" ${this.settings.scanMode === 'rules-only' ? 'selected' : ''}>Rules only</option>
+<option value="balanced" ${this.settings.scanMode === 'balanced' ? 'selected' : ''}>Balanced</option>
+<option value="thorough" ${this.settings.scanMode === 'thorough' ? 'selected' : ''}>Thorough</option>
+</select>
+<label>Daily Model Budget</label>
+<input id="dailyBudget" type="number" min="0" value="${this.settings.dailyBudget}" />
+
 <div class="row">
 <label><input id="scanOnSave" type="checkbox" ${this.settings.scanOnSave ? 'checked' : ''}/> Scan on Save</label>
 <label><input id="scanOnKeystroke" type="checkbox" ${this.settings.scanOnKeystroke ? 'checked' : ''}/> Scan on Keystroke</label>
@@ -109,6 +120,8 @@ byId('saveBtn').addEventListener('click', () => {
       scanOnSave: byId('scanOnSave').checked,
       scanOnKeystroke: byId('scanOnKeystroke').checked,
       severityFilter: severity,
+	scanMode: byId('scanMode').value,
+	dailyBudget: byId('dailyBudget').value,
     }
   });
 });

@@ -5,7 +5,7 @@ import { DiagnosticsManager } from './diagnostics';
 import { SettingsManager } from './settings';
 import { SageArmorSidebarProvider } from './sidebar';
 import { AdvancedSettingsPanel } from './settingsPanel';
-import { normalizeRemediation } from './fixUtils';
+import { normalizeRemediation, createDiffHunk } from './fixUtils';
 
 let diagnosticsManager: DiagnosticsManager;
 let scannerManager: ScannerManager;
@@ -233,7 +233,7 @@ export function activate(context: vscode.ExtensionContext) {
 
 	// Create status bar item
 	const statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
-	statusBar.text = '🛡️ Sage Armor: Ready';
+	statusBar.text = `🛡️ Sage Armor (${settingsManager.provider}): Ready`;
 	statusBar.show();
 
 	const sidebarView = vscode.window.createTreeView('sageArmorPanel', {
@@ -244,8 +244,8 @@ export function activate(context: vscode.ExtensionContext) {
 		sidebarProvider.refresh();
 		const summary = sidebarProvider.getSummary();
 		statusBar.text = summary.total > 0
-			? `🛡️ Sage Armor: ${summary.total} issue(s)`
-			: '🛡️ Sage Armor: Ready';
+			? `🛡️ Sage Armor (${settingsManager.provider}): ${summary.total} issue(s)`
+			: `🛡️ Sage Armor (${settingsManager.provider}): Ready`;
 	};
 
 	// Register Quick Fix action provider
@@ -285,16 +285,36 @@ export function activate(context: vscode.ExtensionContext) {
 						return null;
 					}
 
-					const markdown = new vscode.MarkdownString();
-					markdown.appendMarkdown(`# 🔒 Security Issue Detected\n\n`);
-					const description = details?.description || diagnostic.message.split(':').slice(1).join(':').trim() || diagnostic.message;
+					const verdict = details?.verification?.verdict ?? details?.verification_status;
+					const verdictBadge = verdict === 'verified' || details?.verified
+						? 'Confirmed'
+						: verdict === 'refuted'
+						? 'Refuted'
+						: verdict === 'pending'
+						? 'Pending'
+						: 'Unverified';
 
-					markdown.appendMarkdown(`**${title}**\n\n`);
+					const isValidatedPatch = details?.patch_status === 'validated_patch' || details?.validated_patch === true;
+					const patchBadge = isValidatedPatch ? 'Validated Patch' : 'Unvalidated Patch';
+
+					const markdown = new vscode.MarkdownString();
+					markdown.appendMarkdown(`# 🔒 Security Issue: ${title}\n\n`);
+					markdown.appendMarkdown(`- **Verification:** **[${verdictBadge}]**\n`);
+					markdown.appendMarkdown(`- **Patch Status:** **[${patchBadge}]**\n`);
+					markdown.appendMarkdown(`- **Provider:** ${settingsManager.provider}\n`);
+					markdown.appendMarkdown(`- **Sandbox Policy:** ${settingsManager.sandboxPolicy}\n\n`);
+
+					const description = details?.description || diagnostic.message;
 					markdown.appendMarkdown(`${description}\n\n`);
+
+					if (details?.verified && details?.dynamic_trace?.sink_reached) {
+						markdown.appendMarkdown(`> **Exploit Trace:** Sink reached in sandbox${details.dynamic_trace.sink_line ? ` at line ${details.dynamic_trace.sink_line}` : ''}\n\n`);
+					}
+
 					markdown.appendMarkdown(`---\n\n`);
-					markdown.appendMarkdown(`## 🔧 Suggested Fix\n\n`);
-					markdown.appendMarkdown(`\`\`\`\n${remediation}\n\`\`\`\n\n`);
-					markdown.appendMarkdown(`**Apply the suggested fix above** → Click the lightbulb (💡) to auto-apply.\n\n`);
+					markdown.appendMarkdown(`## 🔧 Suggested Fix (${patchBadge})\n\n`);
+					markdown.appendMarkdown(`\`\`\`${document.languageId}\n${remediation}\n\`\`\`\n\n`);
+					markdown.appendMarkdown(`💡 **Quick Fix:** Click the lightbulb to apply with surrounding code preservation.\n\n`);
 					markdown.isTrusted = true;
 					return new vscode.Hover(markdown);
 				}
@@ -310,7 +330,7 @@ export function activate(context: vscode.ExtensionContext) {
 			vscode.window.showWarningMessage('No active editor');
 			return;
 		}
-		statusBar.text = '🛡️ Sage Armor: Scanning...';
+		statusBar.text = `🛡️ Sage Armor: Scanning...`;
 		await scannerManager.scanFile(editor.document);
 		refreshSidebarAndStatus();
 	});
@@ -355,65 +375,153 @@ export function activate(context: vscode.ExtensionContext) {
 
 	const previewFixCmd = vscode.commands.registerCommand(
 		'sageArmor.previewFix',
-		async (title: string, remediation: string) => {
+		async (title: string, remediation: string, originalSnippet?: string, startLine = 1) => {
+			const diffContent = originalSnippet
+				? createDiffHunk(originalSnippet, remediation, startLine)
+				: `// Fix for: ${title}\n${remediation}\n`;
+
 			const doc = await vscode.workspace.openTextDocument({
-				language: 'javascript',
-				content: `// ${title}\n${remediation}\n`,
+				language: originalSnippet ? 'diff' : 'javascript',
+				content: diffContent,
 			});
 			await vscode.window.showTextDocument(doc, { preview: true });
 		}
 	);
 
-	const runExploitTestCmd = vscode.commands.registerCommand(
-		'sageArmor.runExploitTest',
-		async (vuln: any) => {
-			const title = vuln?.title || vuln?.issue || 'Security finding';
-			const outputChannel = vscode.window.createOutputChannel('SageArmor Exploit Verifier');
-			outputChannel.show(true);
-			outputChannel.appendLine(`=======================================================`);
-			outputChannel.appendLine(`🔬 Running Dynamic Exploit Gate Verification`);
-			outputChannel.appendLine(`Target: ${title} (Line ${vuln?.line ?? '?'})`);
-			outputChannel.appendLine(`Attack Vector: ${vuln?.attack_vector || 'Exploit payload'}`);
-			outputChannel.appendLine(`Attack Scenario: ${vuln?.attack_scenario || vuln?.poc_exploit_scenario || 'Standard injection vector'}`);
-			outputChannel.appendLine(`-------------------------------------------------------`);
-			outputChannel.appendLine(`Quarantine Sandbox: Subprocess isolation initialized.`);
-			outputChannel.appendLine(`Tracing mode: Execution Line Tracer (sys.settrace) active.`);
-			if (vuln?.verified) {
-				outputChannel.appendLine(`Status: ✅ PROVEN EXPLOIT`);
-				outputChannel.appendLine(`Dynamic trace confirmed sink line was executed with payload.`);
-			} else {
-				outputChannel.appendLine(`Status: ⚠️ UNCONFIRMED`);
-				outputChannel.appendLine(`Exploit payload did not reach dangerous sink or was safely neutralized.`);
-			}
-			outputChannel.appendLine(`=======================================================`);
-			vscode.window.showInformationMessage(`🔬 Exploit Test Details displayed in Output Channel`);
+	const applyUnverifiedFixCmd = vscode.commands.registerCommand(
+		'sageArmor.applyUnverifiedFix',
+		async (uri: vscode.Uri, replacementRange: vscode.Range, replacement: string, title: string) => {
+			const choice = await vscode.window.showWarningMessage(
+				`${title} has not been fully verified. Apply this draft fix?`,
+				{ modal: true },
+				'Apply Fix'
+			);
+			if (choice !== 'Apply Fix') return;
+			const edit = new vscode.WorkspaceEdit();
+			edit.replace(uri, replacementRange, replacement);
+			await vscode.workspace.applyEdit(edit);
 		}
 	);
 
-	const viewExploitTraceCmd = vscode.commands.registerCommand(
-		'sageArmor.viewExploitTrace',
-		async (vuln: any) => {
-			const outputChannel = vscode.window.createOutputChannel('SageArmor Exploit Verifier');
-			outputChannel.show(true);
-			outputChannel.appendLine(`=======================================================`);
-			outputChannel.appendLine(`🛡️ Sandbox Dynamic Execution Trace: ${vuln?.title || 'Finding'}`);
-			outputChannel.appendLine(`Verification Status: ${vuln?.verification_status || (vuln?.verified ? 'verified' : 'unconfirmed')}`);
-			if (vuln?.dynamic_trace) {
-				outputChannel.appendLine(`Sink Reached: ${vuln.dynamic_trace.sink_reached ? 'YES' : 'NO'}`);
-				outputChannel.appendLine(`Sink Line: ${vuln.dynamic_trace.sink_line || 'N/A'}`);
-				outputChannel.appendLine(`Executed Lines: ${JSON.stringify(vuln.dynamic_trace.executed_lines || [])}`);
-				if (vuln.dynamic_trace.vector_used) {
-					outputChannel.appendLine(`Vector Used: ${vuln.dynamic_trace.vector_used}`);
-				}
-				if (vuln.dynamic_trace.harness_output) {
-					outputChannel.appendLine(`\nHarness Output:\n${vuln.dynamic_trace.harness_output}`);
-				}
-			} else {
-				outputChannel.appendLine(`No dynamic trace recorded for this finding.`);
-			}
-			outputChannel.appendLine(`=======================================================`);
+	const attackPathCmd = vscode.commands.registerCommand('sageArmor.attackPath', async () => {
+		const editor = vscode.window.activeTextEditor;
+		if (!editor) {
+			vscode.window.showWarningMessage('Open a file first to generate an attack path');
+			return;
 		}
-	);
+		try {
+			const code = editor.document.getText();
+			const lang = scannerManager.getLanguageForDocument(editor.document);
+			const data = await client.getAttackPath(code, lang);
+			const doc = await vscode.workspace.openTextDocument({
+				language: 'json',
+				content: JSON.stringify(data, null, 2),
+			});
+			await vscode.window.showTextDocument(doc, { preview: true });
+		} catch (err: any) {
+			vscode.window.showErrorMessage(`Attack path generation failed: ${err.message}`);
+		}
+	});
+
+	const riskScoreCmd = vscode.commands.registerCommand('sageArmor.riskScore', async () => {
+		const editor = vscode.window.activeTextEditor;
+		if (!editor) {
+			vscode.window.showWarningMessage('Open a file first to view risk scores');
+			return;
+		}
+		try {
+			const code = editor.document.getText();
+			const data = await client.getRiskScore([], code);
+			const doc = await vscode.workspace.openTextDocument({
+				language: 'json',
+				content: JSON.stringify(data, null, 2),
+			});
+			await vscode.window.showTextDocument(doc, { preview: true });
+		} catch (err: any) {
+			vscode.window.showErrorMessage(`Risk scoring failed: ${err.message}`);
+		}
+	});
+
+	const copilotChatCmd = vscode.commands.registerCommand('sageArmor.copilotChat', async () => {
+		const editor = vscode.window.activeTextEditor;
+		const question = await vscode.window.showInputBox({
+			prompt: 'Ask Sage Armor Security Copilot',
+			placeHolder: 'e.g. How do I fix the SQL injection vulnerability?',
+		});
+		if (!question) return;
+
+		try {
+			const code = editor ? editor.document.getText() : '';
+			const data = await client.askCopilot(question, [], code);
+			const answer = data?.answer || 'No answer returned';
+			const doc = await vscode.workspace.openTextDocument({
+				language: 'markdown',
+				content: `# Sage Armor Copilot\n\n**Question:** ${question}\n\n**Answer:**\n${answer}\n`,
+			});
+			await vscode.window.showTextDocument(doc, { preview: true });
+		} catch (err: any) {
+			vscode.window.showErrorMessage(`Copilot error: ${err.message}`);
+		}
+	});
+
+	const repoScanCmd = vscode.commands.registerCommand('sageArmor.repoScan', async () => {
+		const repoUrl = await vscode.window.showInputBox({
+			prompt: 'Repository URL to scan',
+			placeHolder: 'https://github.com/org/repo',
+		});
+		if (!repoUrl) return;
+
+		try {
+			const startRes = await client.startRepoScan(repoUrl);
+			const jobId = startRes.job_id;
+			await vscode.window.withProgress(
+				{
+					location: vscode.ProgressLocation.Notification,
+					title: `Scanning ${repoUrl}`,
+					cancellable: true,
+				},
+				async (progress, token) => {
+					token.onCancellationRequested(async () => {
+						await client.cancelRepoScan(jobId);
+					});
+
+					while (!token.isCancellationRequested) {
+						await new Promise((r) => setTimeout(r, 1000));
+						const statusRes = await client.getRepoScanStatus(jobId);
+						progress.report({
+							message: `${statusRes.stage || statusRes.status} (${statusRes.progress || 0}%)`,
+						});
+						if (statusRes.status === 'completed' || statusRes.status === 'failed' || statusRes.status === 'cancelled') {
+							if (statusRes.status === 'completed') {
+								vscode.window.showInformationMessage(`Repo scan complete: ${statusRes.summary || 'Done'}`);
+							} else {
+								vscode.window.showWarningMessage(`Repo scan ended with status: ${statusRes.status}`);
+							}
+							break;
+						}
+					}
+				}
+			);
+		} catch (err: any) {
+			vscode.window.showErrorMessage(`Repo scan failed: ${err.message}`);
+		}
+	});
+
+	const repoAutofixCmd = vscode.commands.registerCommand('sageArmor.repoAutofix', async () => {
+		const repoUrl = await vscode.window.showInputBox({
+			prompt: 'Repository URL for autofix',
+			placeHolder: 'https://github.com/org/repo',
+		});
+		if (!repoUrl) return;
+
+		try {
+			const startRes = await client.startAutofix(repoUrl, [{ issue: 'Scan all vulnerabilities' }]);
+			const jobId = startRes.job_id;
+			vscode.window.showInformationMessage(`Autofix started with Job ID: ${jobId}`);
+		} catch (err: any) {
+			vscode.window.showErrorMessage(`Autofix failed: ${err.message}`);
+		}
+	});
 
 	const testCmd = vscode.commands.registerCommand('sageArmor.testConnection', async () => {
 		try {
@@ -432,7 +540,7 @@ export function activate(context: vscode.ExtensionContext) {
 
 	// Watch file saves
 	const saveWatcher = vscode.workspace.onDidSaveTextDocument(async (document) => {
-		if (settingsManager.scanOnSave && scannerManager.isSupportedLanguage(document.languageId)) {
+		if (settingsManager.scanOnSave && scannerManager.isSupportedDocument(document)) {
 			statusBar.text = '🛡️ Sage Armor: Scanning...';
 			await scannerManager.scanFile(document);
 			refreshSidebarAndStatus();
@@ -448,12 +556,12 @@ export function activate(context: vscode.ExtensionContext) {
 			return;
 		}
 
-		if (!scannerManager.isSupportedLanguage(event.document.languageId)) {
+		if (!scannerManager.isSupportedDocument(event.document)) {
 			return;
 		}
 
 		statusBar.text = '🛡️ Sage Armor: Scanning...';
-		await scannerManager.scanFile(event.document, false);
+		await scannerManager.scanFile(event.document, false, 'rules-only');
 		refreshSidebarAndStatus();
 	});
 
@@ -470,8 +578,12 @@ export function activate(context: vscode.ExtensionContext) {
 	context.subscriptions.push(testCmd);
 	context.subscriptions.push(openIssueCmd);
 	context.subscriptions.push(previewFixCmd);
-	context.subscriptions.push(runExploitTestCmd);
-	context.subscriptions.push(viewExploitTraceCmd);
+	context.subscriptions.push(applyUnverifiedFixCmd);
+	context.subscriptions.push(attackPathCmd);
+	context.subscriptions.push(riskScoreCmd);
+	context.subscriptions.push(copilotChatCmd);
+	context.subscriptions.push(repoScanCmd);
+	context.subscriptions.push(repoAutofixCmd);
 	context.subscriptions.push(saveWatcher);
 	context.subscriptions.push(changeWatcher);
 	context.subscriptions.push(diagnosticsWatcher);
@@ -479,12 +591,6 @@ export function activate(context: vscode.ExtensionContext) {
 	context.subscriptions.push(sidebarView);
 	context.subscriptions.push(codeActionProvider);
 	context.subscriptions.push(hoverProvider);
-
-	const codeLensProvider = vscode.languages.registerCodeLensProvider(
-		{ pattern: '**/*' },
-		new SageArmorCodeLensProvider(diagnosticsManager)
-	);
-	context.subscriptions.push(codeLensProvider);
 
 	refreshSidebarAndStatus();
 
@@ -546,18 +652,29 @@ class SageArmorCodeActionProvider implements vscode.CodeActionProvider {
 				document.lineAt(endLine).text.length
 			);
 
-			// Create action with command
+			const verdict = this.diagManager.getDetails(key)?.verification?.verdict
+				?? this.diagManager.getDetails(key)?.verification_status;
+			const requiresConfirmation = verdict !== 'verified';
+
+			// Verified fixes can be applied directly; all other fixes require confirmation.
 			const action = new vscode.CodeAction(
-				`🔧 Apply suggested fix: ${title}`,
+				requiresConfirmation ? `🔧 Review unverified fix: ${title}` : `🔧 Apply verified fix: ${title}`,
 				vscode.CodeActionKind.QuickFix
 			);
+		if (requiresConfirmation) {
+			action.command = {
+				command: 'sageArmor.applyUnverifiedFix',
+				title: 'Confirm and apply unverified fix',
+				arguments: [document.uri, replacementRange, normalizedRemediation, title],
+			};
+		} else {
 			action.edit = new vscode.WorkspaceEdit();
 			action.edit.replace(document.uri, replacementRange, normalizedRemediation);
-
 			action.command = {
 				command: 'sageArmor.rescanActiveFile',
 				title: 'Rescan Sage Armor diagnostics',
 			};
+		}
 
 			action.diagnostics = [diagnostic];
 			action.isPreferred = true;
@@ -571,68 +688,12 @@ class SageArmorCodeActionProvider implements vscode.CodeActionProvider {
 			preview.command = {
 				command: 'sageArmor.previewFix',
 				title: 'Preview Fix',
-				arguments: [title, normalizedRemediation],
+				arguments: [title, normalizedRemediation, document.getText(replacementRange), startLine + 1],
 			};
 			actions.push(preview);
 		}
 
 		return actions;
-	}
-}
-
-class SageArmorCodeLensProvider implements vscode.CodeLensProvider {
-	private diagManager: DiagnosticsManager;
-
-	constructor(diagManager: DiagnosticsManager) {
-		this.diagManager = diagManager;
-	}
-
-	provideCodeLenses(document: vscode.TextDocument): vscode.CodeLens[] {
-		const lenses: vscode.CodeLens[] = [];
-		const diagnostics = vscode.languages.getDiagnostics(document.uri);
-
-		for (const diag of diagnostics) {
-			if (typeof diag.code !== 'string' || !diag.code.startsWith('sage-armor-fix:')) {
-				continue;
-			}
-			const key = diag.code.replace('sage-armor-fix:', '');
-			const details = this.diagManager.getDetails(key);
-			const lineRange = new vscode.Range(diag.range.start.line, 0, diag.range.start.line, 0);
-
-			if (details?.verified) {
-				lenses.push(
-					new vscode.CodeLens(lineRange, {
-						title: '🛡️ [Verified Exploit: Proven in Sandbox]',
-						command: 'sageArmor.viewExploitTrace',
-						arguments: [details],
-					})
-				);
-				lenses.push(
-					new vscode.CodeLens(lineRange, {
-						title: '🔬 View Trace Log',
-						command: 'sageArmor.viewExploitTrace',
-						arguments: [details],
-					})
-				);
-			} else {
-				lenses.push(
-					new vscode.CodeLens(lineRange, {
-						title: '⚠️ [Unconfirmed Finding: Static Heuristic Only]',
-						command: 'sageArmor.runExploitTest',
-						arguments: [details || { title: diag.message, line: diag.range.start.line + 1 }],
-					})
-				);
-				lenses.push(
-					new vscode.CodeLens(lineRange, {
-						title: '🧪 Run Sandbox Exploit Test',
-						command: 'sageArmor.runExploitTest',
-						arguments: [details || { title: diag.message, line: diag.range.start.line + 1 }],
-					})
-				);
-			}
-		}
-
-		return lenses;
 	}
 }
 

@@ -20,6 +20,8 @@ class SASTScanner:
                 r'execute\s*\(\s*["\']SELECT.*WHERE.*["\']\s*\+',  # SQL + concatenation
                 r'query\s*=\s*["\']SELECT.*["\']\s*\+',  # SQL concatenation
                 r'\.query\s*\(\s*["\']SELECT.*WHERE["\']\s*\+',  # ORM query concatenation
+                r'\|\|\s*[:?][A-Za-z_][A-Za-z0-9_]*',  # SQL concatenation with a bind-style parameter
+                r'\bOR\s+["\']?1["\']?\s*=\s*["\']?1["\']?',  # Tautological authorization predicate
             ],
             'issue': 'SQL Injection Vulnerability',
             'explanation': 'SQL query is built by concatenating user input directly into the SQL string.',
@@ -29,6 +31,7 @@ class SASTScanner:
             'patterns': [
                 r'(?:api[_-]?key|password|secret|token|auth[_-]?token)\s*[:=]\s*["\'](?!{|<<)[A-Za-z0-9\-_.]{8,}',  # Actual hardcoded values
                 r'(?:api[_-]?key|password|secret|token|auth[_-]?token)\s*[:=]\s*["\'][^"\']{20,}["\']',
+                r'(?:api[_-]?key|password|secret|token|auth[_-]?token)\s*:\s*&?str\s*=\s*["\'][^"\']{8,}["\']',  # Typed Rust constants
                 r'BEGIN RSA PRIVATE KEY|BEGIN PRIVATE KEY|BEGIN EC PRIVATE KEY',  # Private keys
                 r'aws_access_key_id\s*=\s*AKIA[0-9A-Z]{16}',  # AWS keys
                 r'github[_-]?token\s*[:=]\s*ghp_[A-Za-z0-9_]{36,}',  # GitHub tokens
@@ -42,6 +45,10 @@ class SASTScanner:
                 r'subprocess\.(?:run|call|Popen)\s*\(\s*f["\']',  # subprocess with f-string
                 r'subprocess\.(?:run|call|Popen)\s*\(\s*["\'].*\+',  # subprocess with concatenation
                 r'os\.system\s*\(\s*(?:cmd|command|input|user|f["\'])',  # System calls with variables or f-string
+                r'\b(?:std::)?system\s*\(\s*(?:params?\[|cmd|command|input|user)',  # Ruby/C/C++ system calls with user input
+                r'std::system\s*\([^)]*\.c_str\s*\(\s*\)\s*\)',  # C++ dynamic shell command
+                r'Command::new\s*\([^)]*\)\s*\.arg\s*\(\s*["\']-c["\']\s*\)\s*\.arg\s*\(\s*\w+',  # Rust shell execution
+                r'child_process\.(?:exec|execSync|spawn|spawnSync)\s*\(',  # Node.js child_process command execution (FR-109)
                 r'shell\s*=\s*True',  # shell=True flag with dynamic input
             ],
             'issue': 'Command Injection / Arbitrary Code Execution',
@@ -52,7 +59,8 @@ class SASTScanner:
             'patterns': [
                 r'open\s*\(\s*(?:request\.|user_|input|path|file_path)',  # File open with user input
                 r'os\.path\.join\s*\(\s*base_path\s*,\s*(?:request\.|user_|input)',  # Path join with user input
-                r'\.\.\/|\.\.\\\\',  # Path traversal patterns in strings
+                r'fs::read_to_string\s*\(\s*\w*(?:path|file)',  # Rust file access using a caller-controlled path
+                r'fs\.(?:readFileSync|readFile|createReadStream)\s*\(\s*(?:req\.|params\.|query\.|input|\w+\s*\+)',  # Node.js fs file read (FR-109)
             ],
             'issue': 'Path Traversal / Directory Escape',
             'explanation': 'File paths are constructed using unsanitized user input, allowing directory traversal.',
@@ -62,9 +70,9 @@ class SASTScanner:
             'patterns': [
                 r'pickle\.loads?\s*\(',  # Python pickle
                 r'yaml\.load\s*\(\s*(?!Loader)',  # YAML without safe loader
-                r'\.load\s*\(\s*.*\)|json\.loads\s*\(',  # Unsafe loading
-                r'eval\s*\(\s*',  # Direct eval
-                r'exec\s*\(\s*',  # Direct exec
+                r'(?<!json)\.load\s*\(\s*.*\)',  # Suspicious generic loader; JSON parsing is not inherently unsafe
+                r'(?<![a-zA-Z0-9_.])eval\s*\(\s*',  # Direct eval
+                r'(?<![a-zA-Z0-9_.])exec\s*\(\s*',  # Direct exec
             ],
             'issue': 'Insecure Deserialization',
             'explanation': 'User input is deserialized without validation, allowing arbitrary code execution.',
@@ -75,7 +83,6 @@ class SASTScanner:
                 r'hashlib\.(?:md5|sha1)\(',  # md5 or sha1 hashing
                 r'(?:md5|sha1|MD5|SHA1)\s*\(',  # Weak hashing functions
                 r'AES\.MODE_ECB',  # ECB mode (no random IV)
-                r'random\.(?:choice|Random)\s*\(',  # Weak random
             ],
             'issue': 'Weak Cryptographic Algorithm',
             'explanation': 'Code uses outdated or weak cryptographic algorithms (MD5, SHA1, ECB mode).',
@@ -120,90 +127,162 @@ class SASTScanner:
             'issue': 'Missing Input Validation',
             'explanation': 'User input is used without proper validation or sanitization.',
         },
+        'xss_injection': {
+            'severity': 'Medium',
+            'patterns': [
+                r'\.innerHTML\s*=\s*(?:req\.|params\.|query\.|user_input|\w+\s*\+)',
+                r'res\.(?:send|write)\s*\(\s*["\'].*?<[a-zA-Z]+.*?\$\{',
+                r'document\.write\s*\(',
+            ],
+            'issue': 'Cross-Site Scripting (XSS) Vulnerability',
+            'explanation': 'Untrusted input is injected directly into the DOM or response HTML without encoding.',
+        },
+    }
+
+    SAFE_TWINS = {
+        'sql_injection': {
+            'vulnerable': 'cursor.execute("SELECT * FROM users WHERE id = " + user_id)',
+            'safe': 'cursor.execute("SELECT * FROM users WHERE id = ?", (user_id,))',
+        },
+        'hardcoded_secret': {
+            'vulnerable': 'api_key = "sk-1234567890abcdefghijklmnop"',
+            'safe': 'api_key = os.environ.get("API_KEY")',
+        },
+        'command_injection': {
+            'vulnerable': 'subprocess.run(f"process {user_input}", shell=True)',
+            'safe': 'subprocess.run(["process", user_input], shell=False)',
+        },
+        'path_traversal': {
+            'vulnerable': 'open(request.args.get("file"), "r")',
+            'safe': 'filename = secure_filename(request.args.get("file"))\nopen(os.path.join(safe_dir, filename), "r")',
+        },
+        'insecure_deserialization': {
+            'vulnerable': 'data = pickle.loads(untrusted_data)',
+            'safe': 'data = json.loads(untrusted_data)',
+        },
+        'weak_cryptography': {
+            'vulnerable': 'hashlib.md5(password.encode()).hexdigest()',
+            'safe': 'hashlib.sha256(password.encode()).hexdigest()',
+        },
+        'authentication_bypass': {
+            'vulnerable': 'jwt.decode(token, secret, verify=False)',
+            'safe': 'jwt.decode(token, secret, verify=True, algorithms=["HS256"])',
+        },
+        'cors_misconfiguration': {
+            'vulnerable': 'app.config["CORS_ORIGINS"] = "*"',
+            'safe': 'app.config["CORS_ORIGINS"] = ["https://trusted.domain.com"]',
+        },
+        'unsafe_redirect': {
+            'vulnerable': 'redirect(request.args.get("url"))',
+            'safe': 'if is_safe_url(target): redirect(target)',
+        },
+        'missing_validation': {
+            'vulnerable': 'return request.args.get("data")',
+            'safe': 'return sanitize_input(request.args.get("data"))',
+        },
     }
 
     @staticmethod
     def scan_code(code: str, file_path: str = '') -> List[Dict[str, Any]]:
         """
         Scan code for vulnerabilities using real pattern matching.
+        Preserves per-occurrence findings across locations.
         
         Args:
             code: Source code to scan
             file_path: Path to the file being scanned
             
         Returns:
-            List of found vulnerabilities with details
+            List of found vulnerabilities with per-occurrence details
         """
         findings = []
         code_lower = code.lower()
         lines = code.split('\n')
+        seen_line_rule = set()
         
         # Scan for each vulnerability type
-        for vuln_type, vuln_config in SASTScanner.VULNERABILITY_PATTERNS.items():
+        for vuln_type, vuln_config in SASTScanner.RULE_REGISTRY.items():
             for pattern in vuln_config['patterns']:
                 try:
-                    matches = list(re.finditer(pattern, code_lower, re.IGNORECASE | re.MULTILINE))
+                    matches = list(re.finditer(pattern, code, re.IGNORECASE | re.MULTILINE))
                     
                     for match in matches:
                         # Find line number
-                        line_num = code_lower[:match.start()].count('\n') + 1
+                        line_num = code[:match.start()].count('\n') + 1
+                        dedup_key = (vuln_config['rule_id'], line_num)
+                        if dedup_key in seen_line_rule:
+                            continue
                         
                         # Get the actual line of code
                         matched_line = lines[line_num - 1] if line_num <= len(lines) else ''
+                        matched_stripped = matched_line.strip()
+
+                        # --- False positive qualification filters ---
+                        # 1. json.loads and json.load are safe
+                        if 'json.loads' in matched_stripped or 'json.load' in matched_stripped:
+                            continue
+
+                        # 2. Generic .load: ignore safe loaders or non-deserialization loaders
+                        if vuln_type == 'insecure_deserialization' and '.load(' in matched_stripped:
+                            if any(safe in matched_stripped for safe in ['json.', 'Loader=SafeLoader', 'SafeLoader', 'torch.load']):
+                                continue
+
+                        # 3. random.choice: only flag if key/secret/password generation
+                        if vuln_type == 'weak_cryptography' and 'random.choice' in matched_stripped:
+                            if not any(k in matched_stripped.lower() for k in ['key', 'secret', 'password', 'token', 'auth', 'credential']):
+                                continue
+
+                        # 4. ../ strings: ignore static literals or docpaths not fed into open/join
+                        if vuln_type == 'path_traversal':
+                            if not any(sink in matched_stripped for sink in ['open', 'os.path', 'pathlib', 'read', 'write', 'join', 'send_file', 'File']):
+                                continue
+                            if 'open' in matched_stripped and ('"../' in matched_stripped or "'../" in matched_stripped):
+                                if re.match(r'open\s*\(\s*["\'][^"\']+["\']\s*[,)]', matched_stripped):
+                                    continue
+
+                        # 5. Generic eval: ignore constant literals (e.g. eval("1+1"), eval("{}"))
+                        if vuln_type == 'insecure_deserialization' and 'eval(' in matched_stripped:
+                            const_eval_match = re.search(r'eval\s*\(\s*["\']([^"\']*)["\']\s*\)', matched_stripped)
+                            if const_eval_match:
+                                inner_expr = const_eval_match.group(1)
+                                if not any(op in inner_expr for op in ['__', 'import', 'system', 'exec', 'subprocess', 'open']):
+                                    continue
+
+                        seen_line_rule.add(dedup_key)
+                        cand_id = f"cand-{vuln_type}-{line_num}-{len(findings) + 1}"
                         
                         finding = {
+                            'rule_id': vuln_config['rule_id'],
+                            'cwe_id': vuln_config['cwe_id'],
+                            'candidate_id': cand_id,
+                            'confidence': vuln_config['confidence'],
+                            'languages': vuln_config['languages'],
                             'severity': vuln_config['severity'],
                             'issue': vuln_config['issue'],
                             'type': vuln_type,
                             'file': file_path,
                             'line': line_num,
-                            'matched_code': matched_line.strip()[:100],  # First 100 chars
+                            'endLine': line_num,
+                            'matched_code': matched_stripped[:100],
                             'explanation': vuln_config['explanation'],
                             'attack_vector': SASTScanner._get_attack_vector(vuln_type),
                             'poc_exploit_scenario': SASTScanner._get_poc(vuln_type),
                             'remediation': SASTScanner._get_remediation(vuln_type),
                             'suggested_fix': SASTScanner._get_fix_suggestion(vuln_type),
+                            'file_references': [{
+                                'file': file_path,
+                                'line': line_num,
+                                'endLine': line_num,
+                                'matched_code': matched_stripped[:100],
+                            }],
+                            'file_count': 1,
                         }
                         findings.append(finding)
                         
                 except re.error:
                     continue
         
-        # Deduplicate by issue type and group files
-        grouped_findings = {}
-        for finding in findings:
-            issue_type = finding['issue']
-            if issue_type not in grouped_findings:
-                grouped_findings[issue_type] = {
-                    'severity': finding['severity'],
-                    'issue': finding['issue'],
-                    'type': finding['type'],
-                    'explanation': finding['explanation'],
-                    'attack_vector': finding['attack_vector'],
-                    'poc_exploit_scenario': finding['poc_exploit_scenario'],
-                    'remediation': finding['remediation'],
-                    'suggested_fix': finding['suggested_fix'],
-                    'file_references': [],
-                }
-            grouped_findings[issue_type]['file_references'].append({
-                'file': finding['file'],
-                'line': finding['line'],
-                'matched_code': finding['matched_code'],
-            })
-        
-        # Convert grouped findings back to list with primary_file set
-        deduplicated_findings = []
-        for issue_type, finding_data in grouped_findings.items():
-            # Use the first file reference as the primary one for display
-            if finding_data['file_references']:
-                primary_ref = finding_data['file_references'][0]
-                finding_data['file'] = primary_ref['file']
-                finding_data['line'] = primary_ref['line']
-                finding_data['matched_code'] = primary_ref['matched_code']
-                finding_data['file_count'] = len(finding_data['file_references'])
-            deduplicated_findings.append(finding_data)
-        
-        return deduplicated_findings
+        return findings
 
     @staticmethod
     def _get_attack_vector(vuln_type: str) -> str:
@@ -306,3 +385,29 @@ class SASTScanner:
     def scan(self, code: str, file_path: str = '<input>') -> List[Dict[str, Any]]:
         """Instance alias for scan_code."""
         return self.scan_code(code, file_path=file_path)
+
+
+_RULE_CWES = {
+    'sql_injection': 'CWE-89',
+    'hardcoded_secret': 'CWE-798',
+    'command_injection': 'CWE-78',
+    'path_traversal': 'CWE-22',
+    'insecure_deserialization': 'CWE-502',
+    'weak_cryptography': 'CWE-327',
+    'authentication_bypass': 'CWE-287',
+    'cors_misconfiguration': 'CWE-942',
+    'unsafe_redirect': 'CWE-601',
+    'missing_validation': 'CWE-20',
+}
+
+SASTScanner.RULE_VERSION = 'rules-v1'
+SASTScanner.RULE_REGISTRY = {
+    rule_type: {
+        **config,
+        'rule_id': f'SA-{rule_type.upper()}',
+        'cwe_id': _RULE_CWES.get(rule_type),
+        'languages': ['python', 'javascript', 'typescript', 'java', 'ruby', 'rust', 'sql', 'c', 'cpp', 'csharp', 'go', 'kotlin', 'php', 'swift'],
+        'confidence': 'medium',
+    }
+    for rule_type, config in SASTScanner.VULNERABILITY_PATTERNS.items()
+}

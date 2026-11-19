@@ -1,6 +1,11 @@
 import json
 import os
 
+SYSTEM_PROMPT = """You are SageArmor AI, an elite autonomous Digital Security Engineer.
+Your primary task is to review code snippets, PR diffs, and repositories for security vulnerabilities, misconfigurations, or bad practices.
+Base recommendations strictly on CIS Benchmarks, NIST SP 800-53, and OWASP to minimize false positives."""
+
+
 def build_security_prompt(code_snippet: str, language: str = 'python') -> str:
     """
     Parses the CIS/NIST guidelines and constructs a strict JSON AI prompt.
@@ -54,6 +59,9 @@ The JSON must have a single root key 'vulnerabilities' which is an array of obje
 Each object within 'vulnerabilities' must map exactly to:
 - 'severity' (string: Critical, High, Medium, Low)
 - 'issue' (string: short descriptive title)
+- 'line' (integer: 1-indexed line number in the submitted code where the vulnerability occurs)
+- 'matched_code' (string: the exact snippet or line of vulnerable code)
+- 'function_name' (string: the name of the function enclosing the vulnerability, if any)
 - 'explanation' (string: why it is a risk referencing the guidelines schema)
 - 'poc_exploit_scenario' (string: a clear, step-by-step description showing exactly how an attacker triggers this exploit. If you cannot construct this, discard the finding entirely.)
 - 'remediation' (object) with exactly two sub-fields:
@@ -107,4 +115,55 @@ Return your analysis as a strict JSON object with exactly these fields:
     - 'explanation': String explaining the fix.
 
 Return ONLY JSON.
+"""
+
+
+def build_candidate_triage_prompt(
+    candidates: list,
+    code_snippet: str,
+    file_path: str = "code.py",
+) -> str:
+    """
+    Builds a prompt for model triage of SAST candidates by candidate ID.
+    Requires model confirm/refute/uncertain results with explanation,
+    quoted code spans, and attacker hypothesis.
+    """
+    candidates_json = json.dumps([
+        {
+            "candidate_id": c.get("candidate_id") or f"cand_{i+1}",
+            "issue": c.get("issue"),
+            "cwe_id": c.get("cwe_id"),
+            "line": c.get("line"),
+            "matched_code": c.get("matched_code"),
+        }
+        for i, c in enumerate(candidates)
+    ], indent=2)
+
+    return f"""You are SageArmor AI security triage engineer.
+Review each static analysis candidate against the code below.
+For EVERY candidate ID, determine whether it is confirmed, refuted, or uncertain.
+
+File: {file_path}
+Code:
+```
+{code_snippet}
+```
+
+Candidates:
+```json
+{candidates_json}
+```
+
+REQUIRED OUTPUT FORMAT:
+Return ONLY a valid JSON object with a single root key 'triage_results', an array of objects:
+[
+  {{
+    "candidate_id": "<matching candidate_id>",
+    "decision": "confirm" | "refute" | "uncertain",
+    "quoted_code_span": "<exact quoted source code snippet showing the sink or sanitizer>",
+    "explanation": "<detailed explanation of why this is or is not exploitable>",
+    "attacker_hypothesis": "<how an attacker would reach this sink, or why an attacker cannot reach it>"
+  }}
+]
+Do NOT omit any candidate. Return ONLY pure JSON.
 """

@@ -1,3 +1,13 @@
 export { normalizeReviewResponse, mapBackendError } from './client';
-export { filterBySeverity, summarizeVulnerabilities } from './scanUtils';
-export { normalizeRemediation } from './fixUtils';
+export {
+	filterBySeverity,
+	summarizeVulnerabilities,
+	isSupportedLanguage,
+	isSupportedExtension,
+	getLanguageForExtension,
+} from './scanUtils';
+export {
+	normalizeRemediation,
+	createDiffHunk,
+	applyPatchPreservingContext,
+} from './fixUtils';

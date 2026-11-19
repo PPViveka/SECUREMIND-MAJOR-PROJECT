@@ -4,7 +4,6 @@ import {
   Controls,
   ReactFlow,
   type Edge,
-  type Node,
   MarkerType,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
@@ -14,6 +13,9 @@ import {
   MessageSquare, Send, Bug, Route, BarChart3,
 } from 'lucide-react';
 import { PageTransition } from '../components/shared/PageTransition';
+import { ChatMarkdown } from '../components/shared/ChatMarkdown';
+import { attackNodeTypes, roleFromCriticality, ROLE_STYLE, type AttackFlowNode } from '../components/shared/AttackGraphNode';
+import { auth } from '../services/auth';
 
 // Inline GitHub icon
 const GithubIcon = ({ className }: { className?: string }) => (
@@ -35,8 +37,13 @@ type Vulnerability = {
   exploitability_level?: string;
   score?: number;
   file_path?: string;
+  finding_id?: string;
+  id?: string;
+  patch_status?: string;
+  validated_patch?: boolean;
   verified?: boolean;
-  verification_status?: 'verified' | 'unconfirmed';
+  verification?: { verdict?: string; reason?: string };
+  verification_status?: string;
   dynamic_trace?: {
     sink_reached?: boolean;
     sink_line?: number;
@@ -48,6 +55,16 @@ type Vulnerability = {
 };
 type AttackNode = { id: string; label: string; kind: string; criticality: string };
 type AttackEdge = { id: string; source: string; target: string; label?: string };
+type AttackPath = Record<string, unknown>;
+type VerificationGate = { passed: boolean; gate: string; detail: string };
+type AutoFixResult = {
+  diff?: string;
+  confidence?: string;
+  patch_status?: string;
+  fixed_code?: string;
+  explanation?: string;
+  verification_gates?: VerificationGate[];
+};
 type RiskItem = {
   id: string; issue: string; severity: string; priority_score: number;
   occurrence_count?: number; asset_value: string;
@@ -58,6 +75,8 @@ type SimulationData = {
   likely_impact?: string[]; compromise_probability?: string;
 };
 type ChatMessage = { role: 'user' | 'assistant'; text: string };
+type AttackGraph = { nodes: AttackNode[]; edges: AttackEdge[]; attack_paths?: AttackPath[]; ast_derived?: boolean };
+type RepoStats = Record<string, unknown>;
 
 const getSeverityLevel = (sev?: string) => {
   const s = (sev || '').toLowerCase();
@@ -93,6 +112,10 @@ const sevStyle = (level: string) => {
 
 const glassCard = 'backdrop-blur-xl bg-white/[0.04] border border-white/10 rounded-2xl';
 
+// Attack graph layout spacing (px): columns hold successive hops, rows hold siblings.
+const COLUMN_GAP = 300;
+const ROW_GAP = 120;
+
 export default function ScannerPage() {
   const [codeSnippet, setCodeSnippet] = useState(`import os\nimport sqlite3\n\ndef get_user(user_id):\n    # Vulnerable to SQL injection\n    conn = sqlite3.connect('users.db')\n    cursor = conn.cursor()\n    query = "SELECT * FROM users WHERE id = " + user_id\n    cursor.execute(query)\n    return cursor.fetchall()\n`);
   const [language, setLanguage] = useState('python');
@@ -101,7 +124,7 @@ export default function ScannerPage() {
   const [copiedIdx, setCopiedIdx] = useState<number | null>(null);
   const [activeTab, setActiveTab] = useState<'results' | 'attack' | 'simulation' | 'copilot'>('results');
   const [scanResults, setScanResults] = useState<{ vulnerabilities?: Vulnerability[] } | null>(null);
-  const [attackGraph, setAttackGraph] = useState<{ nodes: AttackNode[]; edges: AttackEdge[]; attack_paths?: any[]; ast_derived?: boolean } | null>(null);
+  const [attackGraph, setAttackGraph] = useState<AttackGraph | null>(null);
   const [riskRanking, setRiskRanking] = useState<RiskItem[]>([]);
   const [simulationData, setSimulationData] = useState<SimulationData | null>(null);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([{ role: 'assistant', text: 'Ask me anything about exploitability, attack chains, or what to fix first.' }]);
@@ -112,18 +135,49 @@ export default function ScannerPage() {
   const [isAutoFixing, setIsAutoFixing] = useState(false);
   const [autofixJob, setAutofixJob] = useState<{
     job_id: string; status: string; stage: string; progress: number;
-    results: any[]; logs: string[]; pr_url?: string; summary?: string;
+    results: AutoFixResult[]; logs: string[]; pr_url?: string; summary?: string;
   } | null>(null);
   const [scanJob, setScanJob] = useState<{
     job_id: string; status: string; stage: string; progress: number;
-    vulnerabilities_partial?: any[]; vulnerabilities_full?: any[];
-    repo_stats?: any; logs: string[];
+    vulnerabilities_partial?: Vulnerability[]; vulnerabilities_full?: Vulnerability[];
+    repo_stats?: RepoStats; attack_graph?: AttackGraph; risk_ranking?: RiskItem[];
+    breach_simulation?: SimulationData; logs: string[];
   } | null>(null);
-  const [autoFixResults, setAutoFixResults] = useState<{ summary: string; pr_url?: string; fixes: any[] } | null>(null);
+  const [autoFixResults, setAutoFixResults] = useState<{ summary: string; pr_url?: string; fixes: AutoFixResult[] } | null>(null);
   const [apiError, setApiError] = useState<string | null>(null);
+  const [githubToken, setGithubToken] = useState(auth.getGitHubToken() || '');
+  const [backendStatus, setBackendStatus] = useState<{
+    status: 'checking' | 'online' | 'degraded' | 'offline';
+    provider?: string;
+    model?: string;
+    degraded?: boolean;
+    reason?: string;
+  }>({ status: 'checking' });
   const chatBottomRef = useRef<HTMLDivElement>(null);
 
   const apiUrl = import.meta.env.VITE_API_BASE_URL || 'http://localhost:6060';
+
+  useEffect(() => {
+    fetch(`${apiUrl}/healthz`)
+      .then(res => res.json())
+      .then(data => {
+        setBackendStatus({
+          status: data.status === 'ok' ? (data.degraded ? 'degraded' : 'online') : 'degraded',
+          provider: data.provider || 'Amazon Bedrock',
+          model: data.model || 'Claude 3.5 Sonnet',
+          degraded: Boolean(data.degraded),
+          reason: data.degraded_reason,
+        });
+      })
+      .catch(() => {
+        setBackendStatus({ status: 'offline' });
+      });
+  }, [apiUrl]);
+
+  const handleGithubTokenChange = (val: string) => {
+    setGithubToken(val);
+    auth.setGitHubToken(val || null);
+  };
 
   const postJson = async (path: string, payload: Record<string, unknown>) => {
     const res = await fetch(`${apiUrl}${path}`, {
@@ -134,13 +188,21 @@ export default function ScannerPage() {
 
   const pollJobStatus = async (jobId: string) => {
     let polling = true;
+    let retries = 0;
+    const maxRetries = 40;
     while (polling) {
+      retries++;
+      if (retries > maxRetries) {
+        setApiError('Polling timed out after 40 attempts. You can retry the job.');
+        setIsAutoFixing(false);
+        break;
+      }
       try {
         const res = await fetch(`${apiUrl}/repo-autofix/status?job_id=${jobId}`);
         const job = await res.json();
         
-        if (job.error || job.status === 'failed') {
-          setApiError(job.error || job.logs?.slice(-1)[0] || 'AutoFix failed');
+        if (job.error || job.status === 'failed' || job.status === 'interrupted') {
+          setApiError(job.error || job.logs?.slice(-1)[0] || `AutoFix ${job.status || 'failed'}`);
           setIsAutoFixing(false);
           polling = false;
         } else {
@@ -160,27 +222,40 @@ export default function ScannerPage() {
             }
           }
         }
-      } catch (e) {
-        setApiError('Failed to poll job status.');
-        setIsAutoFixing(false);
-        polling = false;
+      } catch {
+        if (retries >= maxRetries) {
+          setApiError('Failed to poll job status.');
+          setIsAutoFixing(false);
+          polling = false;
+        }
       }
-      if (polling) await new Promise(r => setTimeout(r, 1500));
+      if (polling) {
+        const delay = Math.min(5000, 1000 + retries * 150);
+        await new Promise(r => setTimeout(r, delay));
+      }
     }
   };
 
   const pollScanJobStatus = async (jobId: string) => {
     let polling = true;
+    let retries = 0;
+    const maxRetries = 40;
     while (polling) {
+      retries++;
+      if (retries > maxRetries) {
+        setApiError('Scan polling timed out after 40 attempts. You can retry the scan.');
+        setIsRepoScanning(false);
+        break;
+      }
       try {
         const res = await fetch(`${apiUrl}/repo-scan/status?job_id=${jobId}`);
         const job = await res.json();
         
-        if (job.error || job.status === 'failed') {
-          if (job.error === 'Job not found') {
-            // Ignore for the first few seconds until POST kicks off creating the job
+        if (job.error || job.status === 'failed' || job.status === 'interrupted') {
+          if (job.error === 'Job not found' && retries < 5) {
+            // Wait for initial creation
           } else {
-            setApiError(job.error || job.logs?.slice(-1)[0] || 'Repo scan failed');
+            setApiError(job.error || job.logs?.slice(-1)[0] || `Repo scan ${job.status || 'failed'}`);
             setIsRepoScanning(false);
             polling = false;
           }
@@ -200,12 +275,17 @@ export default function ScannerPage() {
             polling = false;
           }
         }
-      } catch (e) {
-        setApiError('Failed to poll scan job status.');
-        setIsRepoScanning(false);
-        polling = false;
+      } catch {
+        if (retries >= maxRetries) {
+          setApiError('Failed to poll scan job status.');
+          setIsRepoScanning(false);
+          polling = false;
+        }
       }
-      if (polling) await new Promise(r => setTimeout(r, 1500));
+      if (polling) {
+        const delay = Math.min(5000, 1000 + retries * 150);
+        await new Promise(r => setTimeout(r, delay));
+      }
     }
   };
 
@@ -217,14 +297,16 @@ export default function ScannerPage() {
     setAutofixJob(null);
     setAutoFixResults(null);
     try {
-      const payload: any = {
+      const payload: Record<string, unknown> = {
         vulnerabilities: scanResults.vulnerabilities,
         mode,
-        github_token: localStorage.getItem('github_token') || undefined
       };
 
       if (repoUrl.trim()) {
         payload.repo_url = repoUrl.trim();
+        if (githubToken.trim()) {
+          payload.github_token = githubToken.trim();
+        }
       } else {
         payload.code = codeSnippet;
         payload.language = language;
@@ -282,7 +364,15 @@ export default function ScannerPage() {
         job_id: jobId, status: 'running', stage: 'initializing_connection', progress: 1, logs: ['Establishing background daemon...'], repo_stats: {}
     });
 
-    const payload = { job_id: jobId, repo_url: repoUrl.trim(), branch: repoBranch.trim() || 'main', top_k: 5 };
+    const payload: Record<string, unknown> = {
+      job_id: jobId,
+      repo_url: repoUrl.trim(),
+      branch: repoBranch.trim() || 'main',
+      top_k: 5,
+    };
+    if (githubToken.trim()) {
+      payload.github_token = githubToken.trim();
+    }
     
     postJson('/repo-scan/start', payload).then(data => {
       if (data.error) {
@@ -301,10 +391,13 @@ export default function ScannerPage() {
   const askCopilot = async () => {
     const question = chatInput.trim();
     if (!question) return;
+    if (isChatLoading) return;
+    // Earlier turns, without the canned greeting, so the copilot can answer follow-ups.
+    const history = chatMessages.slice(1).slice(-6);
     setChatMessages(prev => [...prev, { role: 'user', text: question }]);
     setChatInput(''); setIsChatLoading(true);
     try {
-      const result = await postJson('/copilot', { code: codeSnippet, language, vulnerabilities: scanResults?.vulnerabilities || [], question });
+      const result = await postJson('/copilot', { code: codeSnippet, language, vulnerabilities: scanResults?.vulnerabilities || [], question, history });
       setChatMessages(prev => [...prev, { role: 'assistant', text: result.error || result.answer || 'No response from security copilot.' }]);
     } catch { setChatMessages(prev => [...prev, { role: 'assistant', text: 'Copilot endpoint is unreachable. Please verify backend routes.' }]); }
     finally { setIsChatLoading(false); }
@@ -318,17 +411,73 @@ export default function ScannerPage() {
   const score = Math.max(0, 100 - (highCount * 12 + mediumCount * 7 + lowCount * 3));
   const scoreColor = score >= 85 ? '#22c55e' : score >= 60 ? '#f59e0b' : '#ef4444';
 
-  const flowNodes: Node[] = useMemo(() => {
+  const flowNodes: AttackFlowNode[] = useMemo(() => {
     if (!attackGraph?.nodes?.length) return [];
-    return attackGraph.nodes.map((n, idx) => {
-      const hue = n.criticality === 'critical' ? '#ff3333' : n.criticality === 'high' ? '#ff6a6a' : n.criticality === 'entry' ? '#9cff93' : '#79a8ff';
-      return { id: n.id, position: { x: idx * 260, y: idx % 2 === 0 ? 50 : 200 }, data: { label: n.label }, style: { background: '#0d1424', color: '#E5E7EB', border: `1px solid ${hue}`, borderRadius: 12, padding: 10, minWidth: 160, boxShadow: `0 0 24px ${hue}33`, fontWeight: 700 } };
+    // Layered left-to-right layout: entry points in the first column, each node one
+    // column right of its deepest predecessor, so attack paths read from left (input) to right (sink).
+    const ids = new Set(attackGraph.nodes.map(n => n.id));
+    const edges = (attackGraph.edges || []).filter(e => ids.has(e.source) && ids.has(e.target) && e.source !== e.target);
+    const layer: Record<string, number> = {};
+    attackGraph.nodes.forEach(n => { layer[n.id] = 0; });
+    for (let pass = 0; pass < attackGraph.nodes.length; pass++) {
+      let changed = false;
+      for (const e of edges) {
+        if (layer[e.target] < layer[e.source] + 1 && layer[e.source] + 1 < attackGraph.nodes.length) {
+          layer[e.target] = layer[e.source] + 1;
+          changed = true;
+        }
+      }
+      if (!changed) break;
+    }
+    const columns: Record<number, string[]> = {};
+    attackGraph.nodes.forEach(n => { (columns[layer[n.id]] ||= []).push(n.id); });
+    // Order each column by the average row of its predecessors to reduce edge crossings.
+    const rowOf: Record<string, number> = {};
+    Object.keys(columns).map(Number).sort((a, b) => a - b).forEach(col => {
+      const colIds = columns[col];
+      if (col > 0) {
+        const score = (id: string) => {
+          const preds = edges.filter(e => e.target === id && rowOf[e.source] !== undefined).map(e => rowOf[e.source]);
+          return preds.length ? preds.reduce((s, r) => s + r, 0) / preds.length : Number.MAX_SAFE_INTEGER;
+        };
+        colIds.sort((a, b) => score(a) - score(b));
+      }
+      colIds.forEach((id, row) => { rowOf[id] = row; });
     });
+    const tallest = Math.max(...Object.values(columns).map(c => c.length));
+    const position: Record<string, { x: number; y: number }> = {};
+    Object.entries(columns).forEach(([col, colIds]) => {
+      const offset = ((tallest - colIds.length) * ROW_GAP) / 2;
+      colIds.forEach((id, row) => { position[id] = { x: Number(col) * COLUMN_GAP, y: offset + row * ROW_GAP }; });
+    });
+    return attackGraph.nodes.map((n): AttackFlowNode => ({
+      id: n.id,
+      type: 'attack',
+      position: position[n.id],
+      data: { label: n.label, role: roleFromCriticality(n.criticality) },
+    }));
   }, [attackGraph]);
 
   const flowEdges: Edge[] = useMemo(() => {
     if (!attackGraph?.edges?.length) return [];
-    return attackGraph.edges.map(e => ({ id: e.id, source: e.source, target: e.target, label: e.label, animated: true, markerEnd: { type: MarkerType.ArrowClosed, color: '#79a8ff' }, style: { stroke: '#79a8ff', strokeWidth: 2 }, labelStyle: { fill: '#dbe8ff', fontSize: 12, fontWeight: 700 }, labelBgStyle: { fill: '#0d1424', stroke: '#6e9bff', strokeWidth: 1, fillOpacity: 0.98 }, labelBgPadding: [8, 4] as [number, number], labelBgBorderRadius: 6 }));
+    const roleById: Record<string, string> = {};
+    attackGraph.nodes.forEach(n => { roleById[n.id] = roleFromCriticality(n.criticality); });
+    return attackGraph.edges.map(e => {
+      const color = roleById[e.target] === 'sink' ? ROLE_STYLE.sink.color : '#7c8db5';
+      return {
+        id: e.id,
+        source: e.source,
+        target: e.target,
+        type: 'default',
+        label: (e.label || '').replace(/:\s*/, ' · '),
+        markerEnd: { type: MarkerType.ArrowClosed, color, width: 16, height: 16 },
+        style: { stroke: color, strokeWidth: 1.5 },
+        labelStyle: { fill: '#cbd5e1', fontSize: 10, fontWeight: 500 },
+        labelBgStyle: { fill: '#0b1120', fillOpacity: 0.95 },
+        labelBgPadding: [6, 3] as [number, number],
+        labelBgBorderRadius: 4,
+      };
+    });
   }, [attackGraph]);
 
   const tabs = [
@@ -400,10 +549,34 @@ export default function ScannerPage() {
         {/* Main content */}
         <main className="pl-64 flex-1 p-8 overflow-y-auto">
           <div className="max-w-[1200px] mx-auto space-y-6">
-            <header className="mb-8">
-              <h1 className="text-4xl font-bold text-white mb-2" style={{ fontFamily: 'Space Grotesk,sans-serif' }}>AI Security Dashboard</h1>
-              <p className="text-white/50 text-sm">Real-time attack intelligence and vulnerability analysis.</p>
+            <header className="mb-8 flex flex-col md:flex-row md:items-center justify-between gap-4">
+              <div>
+                <h1 className="text-4xl font-bold text-white mb-2" style={{ fontFamily: 'Space Grotesk,sans-serif' }}>AI Security Dashboard</h1>
+                <p className="text-white/50 text-sm">Real-time attack intelligence, differential exploit verification, and validated patches.</p>
+              </div>
+
+              {/* Backend Health Badge */}
+              <div className="flex items-center gap-3 bg-white/5 border border-white/10 rounded-xl px-4 py-2 self-start md:self-auto">
+                <span className={`w-2.5 h-2.5 rounded-full ${
+                  backendStatus.status === 'online' ? 'bg-green-400 shadow-[0_0_10px_rgba(74,222,128,0.5)]' :
+                  backendStatus.status === 'degraded' ? 'bg-amber-400 shadow-[0_0_10px_rgba(251,191,36,0.5)]' :
+                  backendStatus.status === 'checking' ? 'bg-blue-400 animate-pulse' :
+                  'bg-red-400 shadow-[0_0_10px_rgba(248,113,113,0.5)]'
+                }`} />
+                <div className="text-xs">
+                  <span className="font-bold text-white capitalize">{backendStatus.status}</span>
+                  {backendStatus.provider && <span className="text-white/40 ml-1.5 font-mono">({backendStatus.provider})</span>}
+                </div>
+              </div>
             </header>
+
+            {/* Degraded Mode Warning */}
+            {backendStatus.status === 'degraded' && (
+              <div className="p-4 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-200 text-xs flex items-center justify-between">
+                <span>⚠️ <strong>Degraded Mode Active:</strong> Cloud model provider unavailable. Local static AST and rule-based verification are active.</span>
+                <span className="text-[10px] font-mono text-amber-400/80 uppercase">Offline Resilient</span>
+              </div>
+            )}
 
             <div className={`${glassCard} p-6`}>
               <div className="flex justify-between items-center mb-4">
@@ -423,8 +596,28 @@ export default function ScannerPage() {
                 className="w-full h-48 rounded-xl p-4 font-mono text-sm resize-none border border-white/10 outline-none focus:border-cyan-500/50 bg-black/40 text-[#E5E7EB]" />
 
               <div className="mt-5 pt-5 border-t border-white/8 space-y-3">
-                <div className="flex items-center gap-2"><GithubIcon className="w-4 h-4 text-purple-400" /><p className="text-xs uppercase tracking-wider text-white/50">GitHub Scan</p></div>
-                <input value={repoUrl} onChange={e => setRepoUrl(e.target.value)} placeholder="https://github.com/owner/repo" className={inputCls} />
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <GithubIcon className="w-4 h-4 text-purple-400" />
+                    <p className="text-xs uppercase tracking-wider text-white/50">GitHub Repository & Credentials</p>
+                  </div>
+                  <span className="text-[10px] text-white/40">Tokens kept in session memory only (never localStorage)</span>
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                  <input
+                    value={repoUrl}
+                    onChange={e => setRepoUrl(e.target.value)}
+                    placeholder="https://github.com/owner/repo"
+                    className={`${inputCls} md:col-span-2`}
+                  />
+                  <input
+                    type="password"
+                    value={githubToken}
+                    onChange={e => handleGithubTokenChange(e.target.value)}
+                    placeholder="Personal Access Token (optional)"
+                    className={inputCls}
+                  />
+                </div>
                 <button onClick={handleRepoScan} disabled={isRepoScanning || isScanning}
                   className="flex items-center gap-2 px-5 py-2.5 rounded-xl font-semibold text-sm transition-all bg-gradient-to-r from-purple-600 to-blue-600 text-white" style={{ fontFamily: 'Space Grotesk,sans-serif' }}>
                   <GithubIcon className="w-4 h-4" /> {isRepoScanning ? 'Scanning...' : 'Scan Repository'}
@@ -569,7 +762,7 @@ export default function ScannerPage() {
                                        <span className="text-[10px] px-2 py-0.5 rounded-full bg-amber-500/20 border border-amber-500/30 text-amber-300 font-mono tracking-wide">⚠️ Unverified Draft</span>
                                      )}
                                   </div>
-                                  <button onClick={() => { navigator.clipboard.writeText(snippetFix.fixed_code); setCopiedIdx(-1); setTimeout(() => setCopiedIdx(null), 2000) }} className="text-[10px] font-bold px-3 py-1.5 bg-green-500/10 text-green-400 hover:bg-green-500/20 border border-green-500/20 rounded-lg transition-all">
+                                  <button onClick={() => { navigator.clipboard.writeText(snippetFix.fixed_code ?? ''); setCopiedIdx(-1); setTimeout(() => setCopiedIdx(null), 2000) }} className="text-[10px] font-bold px-3 py-1.5 bg-green-500/10 text-green-400 hover:bg-green-500/20 border border-green-500/20 rounded-lg transition-all">
                                      {copiedIdx === -1 ? 'Copied to Clipboard!' : 'Copy Fixed Code'}
                                   </button>
                                </div>
@@ -578,7 +771,7 @@ export default function ScannerPage() {
                                  <details className="mb-3">
                                    <summary className="text-[10px] text-cyan-400/80 cursor-pointer uppercase font-mono tracking-wider">🔬 Verification Gate Details</summary>
                                    <div className="mt-2 p-3 bg-black/60 rounded-lg border border-white/5 space-y-1 font-mono text-[11px]">
-                                     {snippetFix.verification_gates.map((g: any, gi: number) => (
+                                     {snippetFix.verification_gates.map((g, gi) => (
                                        <div key={gi} className={g.passed ? 'text-green-400' : 'text-red-400'}>
                                          {g.passed ? '✅' : '❌'} {g.gate}: {g.detail}
                                        </div>
@@ -588,7 +781,7 @@ export default function ScannerPage() {
                                )}
                                <div className="rounded-lg overflow-hidden border border-white/5">
                                  <pre className="text-[11px] font-mono p-4 bg-[#0A0F1C] overflow-x-auto">
-                                    {snippetFix.diff.split('\n').map((line: string, lIdx: number) => {
+                                    {(snippetFix.diff ?? '').split('\n').map((line, lIdx) => {
                                         if (line.startsWith('---') || line.startsWith('+++')) return null;
                                         const isAdd = line.startsWith('+');
                                         const isDel = line.startsWith('-');
@@ -617,13 +810,27 @@ export default function ScannerPage() {
                              
                              <div className="flex-1">
                                <div className="flex items-center justify-between mb-2">
-                                 <h3 className="text-lg font-bold text-white" style={{ fontFamily: 'Space Grotesk, sans-serif' }}>{v.issue}</h3>
+                                 <div className="flex items-center gap-2">
+                                   <h3 className="text-lg font-bold text-white" style={{ fontFamily: 'Space Grotesk, sans-serif' }}>{v.issue}</h3>
+                                   {((v as any).finding_id || (v as any).id) && (
+                                     <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-white/10 border border-white/20 text-white/70">
+                                       {(v as any).finding_id || (v as any).id}
+                                     </span>
+                                   )}
+                                 </div>
                                  <div className="flex items-center gap-2">
                                    <span className="text-[10px] uppercase font-mono text-white/30 mr-2">{v.file_path || ''}</span>
-                                   {v.verified ? (
+                                   {v.verified || (v as any).verification_status === 'verified' || (v as any).verification?.verdict === 'verified' ? (
                                      <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-green-500/20 border border-green-500/30 text-green-300">🛡️ Verified</span>
+                                   ) : (v as any).verification_status === 'refuted' || (v as any).verification?.verdict === 'refuted' ? (
+                                     <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-500/20 border border-slate-500/30 text-slate-300">❌ Refuted</span>
+                                   ) : (v as any).verification_status === 'pending' || (v as any).verification?.verdict === 'pending' ? (
+                                     <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-blue-500/20 border border-blue-500/30 text-blue-300">⏳ Pending</span>
                                    ) : (
                                      <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-500/20 border border-amber-500/30 text-amber-300">⚠️ Unconfirmed</span>
+                                   )}
+                                   {((v as any).patch_status === 'validated_patch' || (v as any).validated_patch) && (
+                                     <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-cyan-500/20 border border-cyan-500/30 text-cyan-300">🛡️ Validated Patch</span>
                                    )}
                                    <span className={`text-[10px] font-bold px-3 py-1 rounded-full ${badge} uppercase tracking-wider`}>{v.severity}</span>
                                  </div>
@@ -689,10 +896,18 @@ export default function ScannerPage() {
                          🌳 AST-Derived Graph
                        </div>
                      )}
-                     <ReactFlow nodes={flowNodes} edges={flowEdges} fitView proOptions={{ hideAttribution: true }}>
+                     <ReactFlow key={flowNodes.map(n => n.id).join('|')} nodes={flowNodes} edges={flowEdges} nodeTypes={attackNodeTypes} fitView fitViewOptions={{ padding: 0.3, maxZoom: 1 }} minZoom={0.2} maxZoom={1.5} nodesConnectable={false} proOptions={{ hideAttribution: true }}>
                        <Background gap={20} size={1} color="#333" />
-                       <Controls />
+                       <Controls showInteractive={false} />
                      </ReactFlow>
+                     <div className="absolute bottom-2 right-2 z-10 flex gap-3 rounded-lg border border-white/10 bg-black/60 px-3 py-1.5 text-[10px] text-white/70">
+                       {(['entry', 'function', 'sink'] as const).map(role => (
+                         <span key={role} className="flex items-center gap-1.5">
+                           <span className="inline-block h-2.5 w-2.5 rounded-full border-2" style={{ borderColor: ROLE_STYLE[role].color }} />
+                           {ROLE_STYLE[role].caption}
+                         </span>
+                       ))}
+                     </div>
                    </div>
                 ) : activeTab === 'simulation' ? (
                    <div className="space-y-4">
@@ -715,8 +930,8 @@ export default function ScannerPage() {
                   <div className="flex flex-col h-[400px]">
                     <div className="flex-1 overflow-y-auto space-y-4 mb-4 pr-2">
                        {chatMessages.map((m, i) => (
-                         <div key={i} className={`p-3 rounded-xl max-w-[80%] text-sm ${m.role === 'user' ? 'ml-auto bg-blue-500/20 border border-blue-500/30' : 'mr-auto bg-white/5 border border-white/10'}`}>
-                           {m.text}
+                         <div key={i} className={`p-3 rounded-xl max-w-[85%] text-sm ${m.role === 'user' ? 'ml-auto bg-blue-500/20 border border-blue-500/30 whitespace-pre-wrap' : 'mr-auto bg-white/5 border border-white/10 text-white/80'}`}>
+                           {m.role === 'user' ? m.text : <ChatMarkdown text={m.text} />}
                          </div>
                        ))}
                        {isChatLoading && <div className="text-white/30 text-xs animate-pulse">Assistant is thinking...</div>}

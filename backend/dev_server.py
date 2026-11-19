@@ -1,111 +1,52 @@
-import json
+"""
+SageArmor Production Development Server Entrypoint
+Integrates modular API application factory with dev-server configuration.
+"""
+
 import os
 import sys
+from dotenv import load_dotenv
 
 # Ensure backend root is on sys.path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from flask import Flask, request, Response
-try:
-    from flask_cors import CORS
-except ImportError:
-    CORS = None
-from dotenv import load_dotenv
+from src.api.app import create_app
+from src.api.middleware import is_loopback
 
-# Import handlers directly
-from src.handler import (
-    repo_scan_start,
-    repo_scan_status,
-    repo_autofix_start,
-    repo_autofix_status,
-    review_code,
-    copilot_chat,
-    simulate,
-    attack_path,
-    risk_score
+load_dotenv()
+
+# Server Environment Configuration
+bind_host = os.environ.get("HOST", "127.0.0.1")
+auth_token = os.environ.get("SAGEARMOR_AUTH_TOKEN", "")
+request_limit = max(1, int(os.environ.get("RATE_LIMIT_PER_MINUTE", "120")))
+max_bytes = int(os.environ.get("MAX_REQUEST_BYTES", 2 * 1024 * 1024))
+allowed_origins = [
+    origin.strip()
+    for origin in os.environ.get("CORS_ORIGINS", "http://localhost:5173").split(",")
+    if origin.strip()
+]
+
+# Instantiate Application Factory
+app = create_app(
+    bind_host=bind_host,
+    auth_token=auth_token,
+    request_limit=request_limit,
+    allowed_origins=allowed_origins,
+    max_request_bytes=max_bytes,
 )
 
-# Initialize
-load_dotenv()
-app = Flask(__name__)
-# Enable CORS for all routes to match serverless-offline behavior
-if CORS:
-    CORS(app)
-else:
-    @app.before_request
-    def handle_options():
-        if request.method == 'OPTIONS':
-            res = Response()
-            res.headers['Access-Control-Allow-Origin'] = '*'
-            res.headers['Access-Control-Allow-Headers'] = '*'
-            res.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS, PUT, DELETE'
-            return res
+# Reference middleware state for test compatibility
+request_windows = app.security_middleware.request_windows
 
-    @app.after_request
-    def add_cors_headers(response):
-        response.headers['Access-Control-Allow-Origin'] = '*'
-        response.headers['Access-Control-Allow-Headers'] = '*'
-        response.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS, PUT, DELETE'
-        return response
 
-def lambda_bridge(handler_fn, request):
-    """
-    Simulates AWS Lambda event/context bridge.
-    """
-    # 1. Build Event
-    event = {
-        'body': request.get_data().decode('utf-8'),
-        'queryStringParameters': request.args.to_dict(),
-        'pathParameters': {},
-        'requestContext': {'http': {'method': request.method}},
-        'headers': dict(request.headers)
-    }
-    
-    # 2. Call Handler
-    # Note: Using None for context as your handlers don't seem to use it
-    result = handler_fn(event, None)
-    
-    # 3. Process Response
-    status = result.get('statusCode', 200)
-    body = result.get('body', '')
-    headers = result.get('headers', {})
-    
-    return Response(
-        response=body,
-        status=status,
-        headers=headers,
-        mimetype='application/json'
-    )
+def _is_loopback(host: str) -> bool:
+    return is_loopback(host)
 
-@app.route('/review', methods=['POST'])
-def review(): return lambda_bridge(review_code, request)
 
-@app.route('/repo-scan/start', methods=['POST'])
-def scan_start(): return lambda_bridge(repo_scan_start, request)
-
-@app.route('/repo-scan/status', methods=['GET'])
-def scan_status(): return lambda_bridge(repo_scan_status, request)
-
-@app.route('/repo-autofix/start', methods=['POST'])
-def autofix_start(): return lambda_bridge(repo_autofix_start, request)
-
-@app.route('/repo-autofix/status', methods=['GET'])
-def autofix_status(): return lambda_bridge(repo_autofix_status, request)
-
-@app.route('/copilot', methods=['POST'])
-def copilot(): return lambda_bridge(copilot_chat, request)
-
-@app.route('/simulate', methods=['POST'])
-def simulate_bridge(): return lambda_bridge(simulate, request)
-
-@app.route('/attack-path', methods=['POST'])
-def attack(): return lambda_bridge(attack_path, request)
-
-@app.route('/risk-score', methods=['POST'])
-def risk(): return lambda_bridge(risk_score, request)
-
-if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 6060))
-    print(f"✅ SageArmor Native Dev Server (Flask) running on http://localhost:{port}")
-    print(f"🚀 Bypassing serverless-offline space-in-path bugs natively.")
-    app.run(host='0.0.0.0', port=port, debug=True, threaded=True)
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 6060))
+    if not _is_loopback(bind_host) and not auth_token:
+        raise RuntimeError("SAGEARMOR_AUTH_TOKEN is required for non-loopback binding")
+    print(f"✅ SageArmor Production Server running on http://{bind_host}:{port}")
+    debug = os.environ.get("FLASK_DEBUG", "").lower() in {"1", "true", "yes"}
+    app.run(host=bind_host, port=port, debug=debug, threaded=True)

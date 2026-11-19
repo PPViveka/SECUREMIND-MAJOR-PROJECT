@@ -1,8 +1,8 @@
 {
   "name": "sage-armor-scanner",
   "displayName": "Sage Armor Security Scanner",
-  "description": "Real-time security vulnerability scanning in VS Code powered by Gemini AI",
-  "version": "0.1.2",
+  "description": "Real-time security vulnerability scanning with differential verification and verified patch generation in VS Code powered by SageArmor (Amazon Bedrock / Local Fallback)",
+  "version": "0.1.3",
   "engines": {
     "vscode": "^1.75.0"
   },
@@ -15,7 +15,6 @@
     "vulnerability",
     "scanner",
     "siem",
-    "gemini",
     "code-analysis"
   ],
   "icon": "icon.png",
@@ -27,6 +26,7 @@
   "author": "Sage Armor Team",
   "publisher": "sage-armor",
   "activationEvents": [
+    "onStartupFinished",
     "onLanguage:python",
     "onLanguage:javascript",
     "onLanguage:typescript",
@@ -76,14 +76,42 @@
         "title": "Sage Armor: Preview Fix"
       },
       {
-        "command": "sageArmor.runExploitTest",
-        "title": "Sage Armor: Run Exploit Test"
+        "command": "sageArmor.attackPath",
+        "title": "Sage Armor: Generate Attack Path Graph"
       },
       {
-        "command": "sageArmor.viewExploitTrace",
-        "title": "Sage Armor: View Exploit Execution Trace"
+        "command": "sageArmor.riskScore",
+        "title": "Sage Armor: View Risk Rankings"
+      },
+      {
+        "command": "sageArmor.copilotChat",
+        "title": "Sage Armor: Ask Security Copilot"
+      },
+      {
+        "command": "sageArmor.repoScan",
+        "title": "Sage Armor: Start Repository Scan"
+      },
+      {
+        "command": "sageArmor.repoAutofix",
+        "title": "Sage Armor: Start Repository Autofix"
       }
     ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "sageArmor.scanFile",
+          "when": "editorLangId == python || editorLangId == javascript || editorLangId == typescript || editorLangId == javascriptreact || editorLangId == typescriptreact || editorLangId == java || editorLangId == go || editorLangId == cpp || editorLangId == c || editorLangId == csharp || editorLangId == ruby || editorLangId == php || editorLangId == swift || editorLangId == kotlin || editorLangId == rust || editorLangId == sql",
+          "group": "sageArmor@1"
+        }
+      ],
+      "explorer/context": [
+        {
+          "command": "sageArmor.scanWorkspace",
+          "when": "workspaceFolderCount > 0",
+          "group": "sageArmor@1"
+        }
+      ]
+    },
     "views": {
       "explorer": [
         {
@@ -99,7 +127,7 @@
       "properties": {
         "sageArmor.backendUrl": {
           "type": "string",
-          "default": "http://localhost:3000",
+          "default": "http://localhost:6060",
           "description": "Backend API URL"
         },
         "sageArmor.scanOnSave": {
@@ -140,6 +168,40 @@
             "sql"
           ],
           "description": "File types to scan"
+        },
+        "sageArmor.scanMode": {
+          "type": "string",
+          "enum": ["rules-only", "balanced", "thorough"],
+          "default": "balanced",
+          "description": "Analysis mode used for file scans"
+        },
+        "sageArmor.dailyBudget": {
+          "type": "number",
+          "minimum": 0,
+          "default": 100,
+          "description": "Maximum model-assisted scans per day"
+        },
+        "sageArmor.provider": {
+          "type": "string",
+          "enum": ["Amazon Bedrock", "OpenAI", "Anthropic", "Local Rules Only"],
+          "default": "Amazon Bedrock",
+          "description": "Configured LLM and verification provider"
+        },
+        "sageArmor.sandboxPolicy": {
+          "type": "string",
+          "enum": ["subprocess", "docker", "mock", "strict"],
+          "default": "subprocess",
+          "description": "Sandbox isolation policy for exploit verification"
+        },
+        "sageArmor.showRefuted": {
+          "type": "boolean",
+          "default": false,
+          "description": "Display refuted findings in diagnostics and sidebar"
+        },
+        "sageArmor.privacyNotice": {
+          "type": "string",
+          "default": "Code is sent to configured backend URL. Local fallback or API key depends on provider configuration.",
+          "description": "Privacy notice for code scanning"
         }
       }
     }
@@ -156,7 +218,7 @@
     "pretest": "npm run compile && npm run compile:testables",
     "test": "node --test tests/**/*.test.cjs",
     "lint": "eslint src --ext ts",
-    "package": "vsce package",
+    "package": "npm test && vsce package",
     "publish": "vsce publish"
   },
   "devDependencies": {
@@ -166,7 +228,7 @@
     "@typescript-eslint/parser": "^6.0.0",
     "esbuild": "^0.19.0",
     "eslint": "^8.50.0",
-    "typescript": "^5.2.0",
+    "typescript": "~5.3.3",
     "vsce": "^2.15.0"
   },
   "dependencies": {

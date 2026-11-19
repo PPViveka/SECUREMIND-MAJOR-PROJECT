@@ -1,0 +1,133 @@
+name: SageArmor CI / Release Pipeline
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  backend-and-calibration:
+    name: Backend Tests, Security Scans & Gate Calibration
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f backend/requirements.txt ]; then pip install -r backend/requirements.txt; fi
+          pip install coverage bandit pip-audit
+
+      - name: Run Security Scans & Secret Scanning
+        run: |
+          bandit -r backend/src -ll
+          pip-audit -r backend/requirements.txt || true
+          python -m unittest backend/tests/test_security_validation.py
+
+      - name: Run Backend Unit & Integration Tests with Coverage
+        run: |
+          coverage run --source=backend/src -m unittest discover backend/tests -p "test_*.py"
+          coverage report -m
+
+      - name: Run Sandbox Verification Gate Calibration
+        run: |
+          python backend/scripts/calibrate_gates.py
+
+      - name: Run Deterministic Benchmark Evaluation (Recorded Provider)
+        run: |
+          python backend/benchmarks/ablation_runner.py --split dev --llm recorded
+
+  frontend-build:
+    name: Frontend Lint, Typecheck, Test & Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install Dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Lint Frontend
+        working-directory: frontend
+        run: npm run lint
+
+      - name: Run Frontend Tests
+        working-directory: frontend
+        run: npm test
+
+      - name: Typecheck and Build Frontend
+        working-directory: frontend
+        run: npm run build
+
+  extension-test-and-package:
+    name: Extension Lint, Typecheck, Unit, Host Tests & Package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18
+          cache: 'npm'
+          cache-dependency-path: extension/package-lock.json
+
+      - name: Install Dependencies
+        working-directory: extension
+        run: npm ci
+
+      - name: Lint Extension
+        working-directory: extension
+        run: npm run lint
+
+      - name: Compile Extension
+        working-directory: extension
+        run: npm run compile
+
+      - name: Run Extension Unit and Host Tests
+        working-directory: extension
+        run: npm test
+
+      - name: Package Extension Check
+        working-directory: extension
+        run: npm run package
+
+  release-artifacts:
+    name: Generate Release Artifacts (Post-Validation)
+    needs: [backend-and-calibration, frontend-build, extension-test-and-package]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18
+          cache: 'npm'
+          cache-dependency-path: extension/package-lock.json
+
+      - name: Package Extension
+        working-directory: extension
+        run: |
+          npm ci
+          npm run package
+
+      - name: Archive Extension VSIX
+        uses: actions/upload-artifact@v4
+        with:
+          name: sage-armor-extension-vsix
+          path: extension/*.vsix

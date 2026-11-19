@@ -1,0 +1,47 @@
+{
+  "sql_injection": {
+    "is_vulnerable": true,
+    "issue": "SQL Injection",
+    "cwe": "CWE-89",
+    "tokens_used": 150,
+    "confidence": "high",
+    "patch": "cursor.execute('SELECT * FROM users WHERE id = ?', (user_id,))"
+  },
+  "command_injection": {
+    "is_vulnerable": true,
+    "issue": "OS Command Injection",
+    "cwe": "CWE-78",
+    "tokens_used": 170,
+    "confidence": "high",
+    "patch": "subprocess.run(['ping', '-c', '1', host], shell=False)"
+  },
+  "path_traversal": {
+    "is_vulnerable": true,
+    "issue": "Path Traversal",
+    "cwe": "CWE-22",
+    "tokens_used": 160,
+    "confidence": "high",
+    "patch": "safe_name = os.path.basename(user_path)\nwith open(os.path.join('data', safe_name)) as f: return f.read()"
+  },
+  "eval_injection": {
+    "is_vulnerable": true,
+    "issue": "Eval Code Injection",
+    "cwe": "CWE-95",
+    "tokens_used": 140,
+    "confidence": "high",
+    "patch": "ast.literal_eval(user_input)"
+  },
+  "ssrf": {
+    "is_vulnerable": true,
+    "issue": "Server-Side Request Forgery",
+    "cwe": "CWE-918",
+    "tokens_used": 155,
+    "confidence": "high",
+    "patch": "if is_safe_url(url): return requests.get(url, timeout=5).text"
+  },
+  "guarded": {
+    "is_vulnerable": false,
+    "tokens_used": 90,
+    "confidence": "high"
+  }
+}

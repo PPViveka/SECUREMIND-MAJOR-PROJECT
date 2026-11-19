@@ -27,6 +27,15 @@ def _make_event(body: dict, headers: dict = None) -> dict:
 
 class TestReviewCodeInputValidation(unittest.TestCase):
 
+    def test_provider_selection_does_not_switch_from_available_keys(self):
+        handler, _ = self._patched_import()
+        with patch.dict(os.environ, {'MODEL_PROVIDER': '', 'NVIDIA_API_KEY': 'present'}):
+            self.assertEqual(handler._get_model_provider(), 'bedrock')
+
+        with patch.dict(os.environ, {'MODEL_PROVIDER': 'unsupported', 'NVIDIA_API_KEY': ''}):
+            with self.assertRaises(ValueError):
+                handler._get_model_provider()
+
     def _patched_import(self):
         """Returns handler module with boto3 mocked to prevent init-time AWS calls."""
         mock_bedrock = MagicMock()
@@ -88,6 +97,96 @@ class TestReviewCodeInputValidation(unittest.TestCase):
         self.assertIn("vulnerabilities", body)
         self.assertGreaterEqual(len(body["vulnerabilities"]), 1)
         self.assertIn("analysis_mode", body)
+        self.assertIn("job_id", body)
+
+    def test_envelopes_include_analysis_mode_and_optional_job_id(self):
+        handler, _ = self._patched_import()
+        # With job_id
+        event_with_job = _make_event({
+            "code": "query = \"SELECT * FROM users WHERE id = \" + user_id",
+            "language": "python",
+            "router_mode": "rules-only",
+            "job_id": "custom-job-42",
+        })
+        res = handler.review_code(event_with_job, {})
+        body = json.loads(res["body"])
+        self.assertEqual(body["job_id"], "custom-job-42")
+        self.assertEqual(body["analysis_mode"], "rules-only")
+
+        # Without job_id
+        event_no_job = _make_event({
+            "code": "query = \"SELECT * FROM users WHERE id = \" + user_id",
+            "language": "python",
+            "router_mode": "rules-only",
+        })
+        res_no_job = handler.review_code(event_no_job, {})
+        body_no_job = json.loads(res_no_job["body"])
+        self.assertIsNone(body_no_job["job_id"])
+        self.assertEqual(body_no_job["analysis_mode"], "rules-only")
+
+    def test_healthz_exposes_non_sensitive_service_state(self):
+        handler, _ = self._patched_import()
+
+        response = handler.healthz({}, {})
+
+        self.assertEqual(response["statusCode"], 200)
+        body = json.loads(response["body"])
+        self.assertEqual(body["status"], "ok")
+        self.assertIn("schema_version", body)
+        self.assertEqual(response["headers"]["X-Request-ID"], body["request_id"])
+        self.assertIn("degraded", body)
+        self.assertIn("telemetry", body)
+        self.assertIn("usage", body)
+        self.assertIn("analysis_mode", body)
+        self.assertNotIn("NVIDIA_API_KEY", response["body"])
+
+    def test_rejects_oversized_code_snippet(self):
+        handler, _ = self._patched_import()
+        event = _make_event({"code": "x" * 32, "language": "python"})
+
+        with patch.dict(os.environ, {
+            'GITHUB_WEBHOOK_SECRET': '',
+            'MAX_CODE_SIZE_BYTES': '16',
+        }):
+            response = handler.review_code(event, {})
+
+        self.assertEqual(response["statusCode"], 413)
+
+    def test_rejects_unsupported_language(self):
+        handler, _ = self._patched_import()
+        event = _make_event({"code": "x = 1", "language": "made-up-language"})
+
+        with patch.dict(os.environ, {'GITHUB_WEBHOOK_SECRET': ''}):
+            response = handler.review_code(event, {})
+
+        self.assertEqual(response["statusCode"], 400)
+        self.assertIn("schema_version", json.loads(response["body"]))
+
+    def test_rules_only_mode_skips_model_pipeline(self):
+        handler, _ = self._patched_import()
+        event = _make_event({
+            "code": "query = \"SELECT * FROM users WHERE id = \" + user_id",
+            "language": "python",
+            "router_mode": "rules-only",
+        })
+
+        with patch.object(handler, '_invoke_model_json', side_effect=AssertionError("model called")):
+            response = handler.review_code(event, {})
+
+        self.assertEqual(response["statusCode"], 200)
+        self.assertEqual(json.loads(response["body"])["analysis_mode"], "rules-only")
+
+    def test_zero_budget_returns_degraded_local_results(self):
+        handler, _ = self._patched_import()
+        event = _make_event({"code": "eval(user_input)", "language": "python", "budget": 0})
+
+        with patch.object(handler, '_invoke_model_json', side_effect=AssertionError("model called")):
+            response = handler.review_code(event, {})
+
+        body = json.loads(response["body"])
+        self.assertEqual(response["statusCode"], 200)
+        self.assertEqual(body["analysis_mode"], "budget-exhausted")
+        self.assertTrue(body["degraded"])
 
 
 class TestReviewCodeSignatureValidation(unittest.TestCase):
@@ -113,6 +212,19 @@ class TestReviewCodeSignatureValidation(unittest.TestCase):
         self.assertEqual(response["statusCode"], 401)
         body = json.loads(response["body"])
         self.assertIn("error", body)
+
+    def test_returns_401_when_configured_signature_is_missing(self):
+        mock_bedrock = MagicMock()
+        with patch('boto3.client', return_value=mock_bedrock):
+            import importlib
+            from src import handler
+            importlib.reload(handler)
+
+        event = _make_event({"code": "x = 1", "language": "python"})
+        with patch.dict(os.environ, {'GITHUB_WEBHOOK_SECRET': 'real-secret'}):
+            response = handler.review_code(event, {})
+
+        self.assertEqual(response["statusCode"], 401)
 
 
 class TestAdvancedEndpoints(unittest.TestCase):
@@ -144,7 +256,7 @@ class TestAdvancedEndpoints(unittest.TestCase):
         self.assertIn("attack_graph", payload)
         self.assertIn("attack_paths", payload)
 
-    def test_attack_path_falls_back_for_code_only_payload(self):
+    def test_attack_path_reports_no_proven_path_for_code_only_payload(self):
         handler = self._patched_import()
         event = _make_event({
             "code": "query = \"SELECT * FROM users WHERE id = \" + user_id",
@@ -157,7 +269,8 @@ class TestAdvancedEndpoints(unittest.TestCase):
         self.assertEqual(response["statusCode"], 200)
         payload = json.loads(response["body"])
         self.assertIn("attack_graph", payload)
-        self.assertGreaterEqual(len(payload["attack_paths"]), 1)
+        self.assertEqual(payload["attack_paths"], [])
+        self.assertIn("path_reason", payload["attack_graph"])
 
     def test_risk_score_returns_ranked_items(self):
         handler = self._patched_import()
@@ -286,6 +399,23 @@ class TestAdvancedEndpoints(unittest.TestCase):
         self.assertIn("risk_ranking", payload)
         self.assertIn("attack_graph", payload)
         self.assertIn("analysis_mode", payload)
+
+    def test_review_rejects_fallback_when_require_model_is_true(self):
+        handler = self._patched_import()
+        event = _make_event({
+            "code": "query = 'SELECT * FROM users WHERE id = ' + user_id\ncursor.execute(query)",
+            "language": "python",
+            "require_model": True,
+        })
+
+        with patch.object(handler, '_invoke_model_json', side_effect=Exception("Model connection refused")):
+            response = handler.review_code(event, {})
+
+        self.assertEqual(response["statusCode"], 503)
+        payload = json.loads(response["body"])
+        self.assertIn("error", payload)
+        self.assertTrue(payload.get("degraded"))
+        self.assertEqual(payload.get("analysis_mode"), "model-unavailable")
 
 
 if __name__ == "__main__":

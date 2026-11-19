@@ -1,0 +1,54 @@
+version: "3.9"
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: sagearmor-backend
+    restart: unless-stopped
+    ports:
+      - "6060:6060"
+    environment:
+      - HOST=0.0.0.0
+      - PORT=6060
+      - ENVIRONMENT=production
+      - SAGEARMOR_AUTH_TOKEN=${SAGEARMOR_AUTH_TOKEN:?Error: SAGEARMOR_AUTH_TOKEN must be set before launching}
+      - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:5173,http://localhost:80,http://localhost:3000}
+      - SAGE_ARMOR_RATE_LIMIT=120
+      - LLM_PROVIDER=${LLM_PROVIDER:-mock}
+      - MODEL_PROVIDER=${MODEL_PROVIDER:-mock}
+      - NVIDIA_API_KEY=${NVIDIA_API_KEY:-}
+      - SAGEARMOR_SANDBOX_RUNTIME=docker
+    volumes:
+      # Access to the Docker daemon enables isolated ephemeral sandbox containers via stdin streaming.
+      # For hardened production environments, bind to a rootless socket or gVisor runtime.
+      - /var/run/docker.sock:/var/run/docker.sock
+      - backend-data:/app/backend/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6060/healthz"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    container_name: sagearmor-frontend
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:80/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+volumes:
+  backend-data:

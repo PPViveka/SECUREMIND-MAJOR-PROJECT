@@ -3,7 +3,7 @@ Tests for the real SAST (Static Application Security Testing) scanner.
 Validates actual vulnerability detection patterns without mocking.
 """
 
-import pytest
+import unittest
 import sys
 import os
 
@@ -11,10 +11,23 @@ import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from src.sast_scanner import SASTScanner
+from src.prompt_builder import build_candidate_triage_prompt
 
 
-class TestSASTScanner:
+class TestSASTScanner(unittest.TestCase):
     """Test real vulnerability pattern detection."""
+
+    def test_findings_include_versioned_rule_metadata(self):
+        findings = SASTScanner.scan_code(
+            'query = "SELECT * FROM users WHERE id = " + user_id',
+            'test.py',
+        )
+
+        sql_finding = next(finding for finding in findings if finding['type'] == 'sql_injection')
+        assert sql_finding['rule_id'] == 'SA-SQL_INJECTION'
+        assert sql_finding['cwe_id'] == 'CWE-89'
+        assert sql_finding['confidence'] == 'medium'
+        assert sql_finding['endLine'] == sql_finding['line']
 
     def test_sql_injection_concatenation(self):
         """Detect SQL injection with string concatenation."""
@@ -206,6 +219,20 @@ data = pickle.loads(untrusted_data)
             assert 'explanation' in finding['remediation']
             assert 'suggested_fix' in finding
 
+    def test_safe_json_random_and_path_literals_are_not_context_free_findings(self):
+        code = '''
+import json
+import random
+payload = json.loads(serialized_json)
+choice = random.choice(items)
+message = "../docs/readme.txt"
+        '''
+        findings = SASTScanner.scan_code(code, 'safe.py')
+
+        assert not any(finding['type'] in {
+            'insecure_deserialization', 'weak_cryptography', 'path_traversal'
+        } for finding in findings)
+
     def test_finding_has_attack_vector(self):
         """Ensure findings include attack vector description."""
         code = '''
@@ -263,3 +290,72 @@ line 4
         assert len(findings) > 0
         for finding in findings:
             assert finding['file'] == 'app/routes/auth.py'
+
+    def test_per_occurrence_findings(self):
+        """Ensure multiple occurrences of the same issue type are not collapsed."""
+        code = '''
+def func1(u):
+    cursor.execute("SELECT * FROM users WHERE id = " + u)
+
+def func2(v):
+    cursor.execute("SELECT * FROM posts WHERE id = " + v)
+        '''
+        findings = SASTScanner.scan_code(code, 'app/db.py')
+        sql_findings = [f for f in findings if f['type'] == 'sql_injection']
+        self.assertGreaterEqual(len(sql_findings), 2)
+        lines = [f['line'] for f in sql_findings]
+        self.assertEqual(len(lines), len(set(lines)))  # Distinct lines
+        for f in sql_findings:
+            self.assertIn('candidate_id', f)
+            self.assertIn('file_references', f)
+            self.assertEqual(len(f['file_references']), 1)
+
+    def test_safe_twins_regression_suite(self):
+        """Ensure every rule has a vulnerable and safe twin tested in regression."""
+        self.assertTrue(hasattr(SASTScanner, 'SAFE_TWINS'))
+        for vuln_type, twin in SASTScanner.SAFE_TWINS.items():
+            vuln_findings = SASTScanner.scan_code(twin['vulnerable'], 'test_vuln.py')
+            self.assertGreater(
+                len(vuln_findings), 0,
+                f"Vulnerable twin for {vuln_type} should have triggered finding"
+            )
+
+            safe_findings = SASTScanner.scan_code(twin['safe'], 'test_safe.py')
+            severe_safe = [f for f in safe_findings if f['severity'] in ['High', 'Critical'] and f['type'] == vuln_type]
+            self.assertEqual(
+                len(severe_safe), 0,
+                f"Safe twin for {vuln_type} should not trigger High/Critical finding: {severe_safe}"
+            )
+
+    def test_generic_eval_constant_not_flagged(self):
+        """Constant arithmetic eval is qualified as false positive, dynamic eval is flagged."""
+        safe_eval = 'x = eval("1 + 1")'
+        findings = SASTScanner.scan_code(safe_eval, 'test.py')
+        self.assertEqual(len(findings), 0)
+
+        vuln_eval = 'x = eval(user_input)'
+        vuln_findings = SASTScanner.scan_code(vuln_eval, 'test.py')
+        self.assertGreater(len(vuln_findings), 0)
+
+    def test_model_triage_prompt_construction(self):
+        """Ensure model triage prompt asks for confirm/refute/uncertain and attacker hypothesis."""
+        candidates = [
+            {
+                "candidate_id": "cand-sql-1",
+                "issue": "SQL Injection",
+                "cwe_id": "CWE-89",
+                "line": 10,
+                "matched_code": "cursor.execute('SELECT ' + u)",
+            }
+        ]
+        prompt = build_candidate_triage_prompt(candidates, "code...", "test.py")
+        self.assertIn("cand-sql-1", prompt)
+        self.assertIn("confirm", prompt)
+        self.assertIn("refute", prompt)
+        self.assertIn("uncertain", prompt)
+        self.assertIn("attacker_hypothesis", prompt)
+        self.assertIn("quoted_code_span", prompt)
+
+
+if __name__ == '__main__':
+    unittest.main()

@@ -2,6 +2,13 @@ import { motion } from "motion/react";
 import { Shield, ArrowRight, Upload, Code2 } from "lucide-react";
 import { Link } from "react-router-dom";
 
+const particles = Array.from({ length: 20 }, (_, index) => ({
+  left: (index * 37) % 100,
+  top: (index * 53) % 100,
+  drift: ((index * 29) % 70) + 10,
+  duration: (index % 10) + 10,
+}));
+
 export function Hero() {
   return (
     <section className="relative min-h-screen flex items-center justify-center overflow-hidden bg-[#0A0F1C]">
@@ -16,21 +23,18 @@ export function Hero() {
 
       {/* Floating Particles */}
       <div className="absolute inset-0 overflow-hidden">
-        {[...Array(20)].map((_, i) => (
+        {particles.map((particle, i) => (
           <motion.div
             key={i}
             className="absolute w-1 h-1 bg-cyan-400 rounded-full"
-            initial={{
-              x: Math.random() * window.innerWidth,
-              y: Math.random() * window.innerHeight,
-              opacity: 0
-            }}
+            style={{ left: `${particle.left}%`, top: `${particle.top}%` }}
+            initial={{ opacity: 0 }}
             animate={{
-              y: [null, Math.random() * window.innerHeight],
+              y: [0, `${particle.drift}vh`],
               opacity: [0, 1, 0]
             }}
             transition={{
-              duration: Math.random() * 10 + 10,
+              duration: particle.duration,
               repeat: Infinity,
               ease: "linear"
             }}

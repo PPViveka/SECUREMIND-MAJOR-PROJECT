@@ -1,4 +1,5 @@
 import type { Vulnerability } from './client';
+import * as path from 'path';
 
 export interface ScanSummary {
 	total: number;
@@ -8,11 +9,73 @@ export interface ScanSummary {
 	low: number;
 }
 
+const SUPPORTED_EXTENSIONS: Record<string, string> = {
+	'.py': 'python',
+	'.js': 'javascript',
+	'.jsx': 'javascript',
+	'.ts': 'typescript',
+	'.tsx': 'typescript',
+	'.java': 'java',
+	'.go': 'go',
+	'.cpp': 'cpp',
+	'.cc': 'cpp',
+	'.cxx': 'cpp',
+	'.c': 'c',
+	'.h': 'c',
+	'.hpp': 'cpp',
+	'.cs': 'csharp',
+	'.rb': 'ruby',
+	'.php': 'php',
+	'.swift': 'swift',
+	'.kt': 'kotlin',
+	'.rs': 'rust',
+	'.sql': 'sql',
+};
+
+const SUPPORTED_LANGUAGES = new Set([
+	'python',
+	'javascript',
+	'typescript',
+	'javascriptreact',
+	'typescriptreact',
+	'java',
+	'go',
+	'cpp',
+	'c',
+	'csharp',
+	'ruby',
+	'php',
+	'swift',
+	'kotlin',
+	'rust',
+	'sql',
+]);
+
+export function isSupportedLanguage(lang: string): boolean {
+	return SUPPORTED_LANGUAGES.has(lang.toLowerCase());
+}
+
+export function isSupportedExtension(ext: string): boolean {
+	const normalized = ext.startsWith('.') ? ext.toLowerCase() : `.${ext.toLowerCase()}`;
+	return Boolean(SUPPORTED_EXTENSIONS[normalized]);
+}
+
+export function getLanguageForExtension(filePath: string): string {
+	const ext = path.extname(filePath).toLowerCase();
+	return SUPPORTED_EXTENSIONS[ext] || 'plaintext';
+}
+
 export function filterBySeverity(
 	vulnerabilities: Vulnerability[],
-	severityFilter: string[]
+	severityFilter: string[],
+	showRefuted = false
 ): Vulnerability[] {
-	return vulnerabilities.filter((v) => severityFilter.includes(v.severity));
+	return vulnerabilities.filter((v) => {
+		if (!showRefuted && (v.verification_status === 'refuted' || v.verification?.verdict === 'refuted')) {
+			return false;
+		}
+		return severityFilter.map((s) => s.toLowerCase()).includes(v.severity.toLowerCase());
+	});
 }
 
 export function summarizeVulnerabilities(vulnerabilities: Vulnerability[]): ScanSummary {

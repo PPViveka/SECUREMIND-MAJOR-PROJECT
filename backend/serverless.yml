@@ -36,6 +36,14 @@ provider:
 
 
 functions:
+  healthz:
+    handler: src/handler.healthz
+    events:
+      - http:
+          path: /healthz
+          method: get
+          cors: true
+
   reviewCode:
     handler: src/handler.review_code
     # AI call — strict concurrency to cap Gemini/Bedrock spend
@@ -106,6 +114,14 @@ functions:
       - http:
           path: /repo-scan/status
           method: get
+          cors: true
+
+  repoScanCancel:
+    handler: src/handler.repo_scan_cancel
+    events:
+      - http:
+          path: /repo-scan/cancel
+          method: post
           cors: true
 
   repoAutofixStart:

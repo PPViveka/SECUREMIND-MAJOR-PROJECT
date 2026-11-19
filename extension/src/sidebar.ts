@@ -59,14 +59,28 @@ export class SageArmorSidebarProvider implements vscode.TreeDataProvider<Sidebar
 			}
 
 			const issueNodes = sageDiagnostics.map((diag) => {
+				const isFileLevel = diag.message.includes('[File-level]');
+				const isConfirmed = diag.message.includes('[Confirmed]');
+				const isRefuted = diag.message.includes('[Refuted]');
+				const isPending = diag.message.includes('[Pending]');
+				const isUnverified = diag.message.includes('[Unverified]');
+				const isValidated = diag.message.includes('[Validated Patch]');
+				const isUnvalidated = diag.message.includes('[Unvalidated Patch]');
+
+				const verifBadge = isConfirmed ? 'Confirmed' : isRefuted ? 'Refuted' : isPending ? 'Pending' : isUnverified ? 'Unverified' : '';
+				const patchBadge = isValidated ? 'Validated Patch' : isUnvalidated ? 'Unvalidated Patch' : '';
+				const locationLabel = isFileLevel ? 'File-level' : `L${diag.range.start.line + 1}`;
+
+				const badges = [locationLabel, verifBadge, patchBadge, this.severityLabel(diag.severity)].filter(Boolean).join(' • ');
+
 				const issueTitle = diag.message.split(':')[0] || 'Security issue';
 				const issueNode = new SidebarNode(
 					issueTitle,
 					vscode.TreeItemCollapsibleState.None
 				);
-				issueNode.description = `L${diag.range.start.line + 1} • ${this.severityLabel(diag.severity)}`;
+				issueNode.description = badges;
 				issueNode.tooltip = diag.message;
-				issueNode.iconPath = this.severityIcon(diag.severity);
+				issueNode.iconPath = isRefuted ? new vscode.ThemeIcon('pass') : this.severityIcon(diag.severity);
 				issueNode.command = {
 					command: 'sageArmor.openIssue',
 					title: 'Open Issue',
@@ -85,7 +99,9 @@ export class SageArmorSidebarProvider implements vscode.TreeDataProvider<Sidebar
 
 			for (const diag of sageDiagnostics) {
 				summary.total += 1;
-				if (diag.severity === vscode.DiagnosticSeverity.Error) {
+				if (diag.source?.toLowerCase() === 'critical') {
+					summary.critical += 1;
+				} else if (diag.source?.toLowerCase() === 'high' || diag.severity === vscode.DiagnosticSeverity.Error) {
 					summary.high += 1;
 				} else if (diag.severity === vscode.DiagnosticSeverity.Warning) {
 					summary.medium += 1;
@@ -103,6 +119,10 @@ export class SageArmorSidebarProvider implements vscode.TreeDataProvider<Sidebar
 		const totalNode = new SidebarNode(`Total Issues: ${summary.total}`, vscode.TreeItemCollapsibleState.None);
 		totalNode.iconPath = new vscode.ThemeIcon('shield');
 		overviewNodes.push(totalNode);
+
+		const criticalNode = new SidebarNode(`Critical: ${summary.critical}`, vscode.TreeItemCollapsibleState.None);
+		criticalNode.iconPath = new vscode.ThemeIcon('flame');
+		overviewNodes.push(criticalNode);
 
 		const highNode = new SidebarNode(`High: ${summary.high}`, vscode.TreeItemCollapsibleState.None);
 		highNode.iconPath = new vscode.ThemeIcon('error');

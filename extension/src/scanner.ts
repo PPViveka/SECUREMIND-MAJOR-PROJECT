@@ -3,6 +3,7 @@ import { ExtensionClient } from './client';
 import { DiagnosticsManager } from './diagnostics';
 import { SettingsManager } from './settings';
 import { filterBySeverity } from './scanUtils';
+import * as path from 'path';
 
 export class ScannerManager {
 	private client: ExtensionClient;
@@ -45,6 +46,23 @@ export class ScannerManager {
 		return Object.keys(supported).includes(languageId);
 	}
 
+	isSupportedDocument(document: vscode.TextDocument): boolean {
+		if (this.isSupportedLanguage(document.languageId)) {
+			return true;
+		}
+
+		const extensionLanguage: Record<string, string> = {
+			'.py': 'python', '.js': 'javascript', '.jsx': 'javascript',
+			'.ts': 'typescript', '.tsx': 'typescript', '.java': 'java',
+			'.go': 'go', '.cpp': 'cpp', '.cc': 'cpp', '.cxx': 'cpp',
+			'.c': 'c', '.h': 'c', '.hpp': 'cpp', '.cs': 'csharp',
+			'.rb': 'ruby', '.php': 'php', '.swift': 'swift', '.kt': 'kotlin',
+			'.rs': 'rust', '.sql': 'sql',
+		};
+
+		return Boolean(extensionLanguage[path.extname(document.fileName).toLowerCase()]);
+	}
+
 	getLanguageForId(languageId: string): string {
 		const mapping: Record<string, string> = {
 			python: 'python',
@@ -68,12 +86,33 @@ export class ScannerManager {
 		return mapping[languageId] || languageId;
 	}
 
-	async scanFile(document: vscode.TextDocument, showNotification = false): Promise<void> {
+	getLanguageForDocument(document: vscode.TextDocument): string {
+		if (this.isSupportedLanguage(document.languageId)) {
+			return this.getLanguageForId(document.languageId);
+		}
+
+		const extensionLanguage: Record<string, string> = {
+			'.py': 'python', '.js': 'javascript', '.jsx': 'javascript',
+			'.ts': 'typescript', '.tsx': 'typescript', '.java': 'java',
+			'.go': 'go', '.cpp': 'cpp', '.cc': 'cpp', '.cxx': 'cpp',
+			'.c': 'c', '.h': 'c', '.hpp': 'cpp', '.cs': 'csharp',
+			'.rb': 'ruby', '.php': 'php', '.swift': 'swift', '.kt': 'kotlin',
+			'.rs': 'rust', '.sql': 'sql',
+		};
+
+		return extensionLanguage[path.extname(document.fileName).toLowerCase()] || document.languageId;
+	}
+
+	async scanFile(
+		document: vscode.TextDocument,
+		showNotification = false,
+		mode: 'rules-only' | 'model' | 'default' = 'default'
+	): Promise<void> {
 		if (this.scanInProgress) {
 			return;
 		}
 
-		// Debounce if keystroke scanning is enabled
+		// Debounce if keystroke scanning is enabled (at least 1.5s for save scans)
 		if (this.debounceTimer) {
 			clearTimeout(this.debounceTimer);
 			if (this.debounceResolve) {
@@ -82,11 +121,13 @@ export class ScannerManager {
 			}
 		}
 
+		const debounceDelayMs = mode === 'rules-only' ? 300 : 1500;
+
 		await new Promise<void>((resolve) => {
 			this.debounceResolve = resolve;
 			this.debounceTimer = setTimeout(async () => {
 				try {
-					await this._performScan(document, showNotification);
+					await this._performScan(document, showNotification, mode);
 				} finally {
 					if (this.debounceResolve) {
 						this.debounceResolve();
@@ -94,7 +135,7 @@ export class ScannerManager {
 					}
 					this.debounceTimer = null;
 				}
-			}, 500);
+			}, debounceDelayMs);
 		});
 	}
 
@@ -112,9 +153,17 @@ export class ScannerManager {
 			return;
 		}
 
+		// Concurrency bounds and cost estimate
+		const estimatedTokens = files.length * 200;
+		const estimatedCostUsd = (estimatedTokens * 0.000002).toFixed(4);
+		vscode.window.showInformationMessage(
+			`Workspace scan: ${files.length} files queued (est. ~${estimatedTokens} tokens, ~$${estimatedCostUsd} USD)`
+		);
+
 		let scannedCount = 0;
 		let errorCount = 0;
 		let issueCount = 0;
+		const CONCURRENCY_LIMIT = 3;
 
 		await vscode.window.withProgress(
 			{
@@ -123,22 +172,26 @@ export class ScannerManager {
 				cancellable: false,
 			},
 			async (progress) => {
-				for (let i = 0; i < files.length; i++) {
-					const fileUri = files[i];
-					try {
-						const document = await vscode.workspace.openTextDocument(fileUri);
-						const issuesInFile = await this._performScan(document, false);
-						scannedCount++;
-						issueCount += issuesInFile;
-					} catch (error) {
-						errorCount++;
-						console.error(`Error scanning ${fileUri}:`, error);
-					}
+				for (let i = 0; i < files.length; i += CONCURRENCY_LIMIT) {
+					const chunk = files.slice(i, i + CONCURRENCY_LIMIT);
+					await Promise.all(
+						chunk.map(async (fileUri) => {
+							try {
+								const document = await vscode.workspace.openTextDocument(fileUri);
+								const issuesInFile = await this._performScan(document, false, 'default');
+								scannedCount++;
+								issueCount += issuesInFile;
+							} catch (error) {
+								errorCount++;
+								console.error(`Error scanning ${fileUri}:`, error);
+							}
+						})
+					);
 
-					const increment = Math.round(100 / files.length);
+					const increment = Math.round((chunk.length / files.length) * 100);
 					progress.report({
 						increment,
-						message: `${i + 1}/${files.length} • ${fileUri.path.split('/').pop() || 'file'}`,
+						message: `${Math.min(i + CONCURRENCY_LIMIT, files.length)}/${files.length} files scanned`,
 					});
 				}
 			}
@@ -149,7 +202,11 @@ export class ScannerManager {
 		);
 	}
 
-	private async _performScan(document: vscode.TextDocument, showNotification = true): Promise<number> {
+	private async _performScan(
+		document: vscode.TextDocument,
+		showNotification = true,
+		mode: 'rules-only' | 'model' | 'default' = 'default'
+	): Promise<number> {
 		if (this.scanInProgress) {
 			return 0;
 		}
@@ -158,15 +215,20 @@ export class ScannerManager {
 
 		try {
 			const code = document.getText();
-			const language = this.getLanguageForId(document.languageId);
+			const language = this.getLanguageForDocument(document);
 
-			const result = await this.client.reviewCode(code, language);
+			const scanMode = mode === 'rules-only' ? 'rules-only' : this.settingsManager.scanMode;
+			const result = await this.client.reviewCode(code, language, scanMode);
 			const vulnerabilities = Array.isArray(result.vulnerabilities)
 				? result.vulnerabilities
 				: [];
 
 			// Filter by severity
-			const filtered = filterBySeverity(vulnerabilities, this.settingsManager.severityFilter);
+			const filtered = filterBySeverity(
+				vulnerabilities,
+				this.settingsManager.severityFilter,
+				this.settingsManager.showRefuted
+			);
 
 			// Create and set diagnostics
 			const diagnostics = this.diagnosticsManager.createDiagnostics(filtered, document.uri);

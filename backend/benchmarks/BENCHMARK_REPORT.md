@@ -1,24 +1,36 @@
-# 🔬 SageArmor Ablation Benchmark Report (Step 7)
+# 🔬 SageArmor Empirical Benchmark Evaluation Report
 
-Comparative evaluation of 4 scanning architectures on Ground-Truth Benchmark Cases (Vulnerable vs Guarded).
+**Evaluation Split:** `all` | **LLM Mode:** `mock` | **Total Cases:** `100`
 
-| Metric | M1: Rules Only | M2: AI Only | M3: Hybrid (No Sandbox) | M4: Full System (SageArmor) |
-| :--- | :---: | :---: | :---: | :---: |
-| **Evaluated Functions** | 30 | 30 | 30 | 30 |
-| **True Positives (TP)** | 11 | 15 | 11 | 8 |
-| **False Positives (FP)** | 0 | 10 | 0 | 0 |
-| **True Negatives (TN)** | 15 | 5 | 15 | 15 |
-| **False Negatives (FN)** | 4 | 0 | 4 | 7 |
-| **Precision** | 1.00 | 0.60 | 1.00 | 1.00 |
-| **Recall** | 0.73 | 1.00 | 0.73 | 0.53 |
-| **False Positive Rate (FPR)** | 0.00 | 0.67 | 0.00 | 0.00 |
-| **F1 Score** | 0.85 | 0.75 | 0.85 | 0.70 |
-| **Accuracy** | 0.87 | 0.67 | 0.87 | 0.77 |
-| **Avg Tokens / Function** | 0.0 | 359.5 | 124.7 | 48.0 |
-| **Avg Latency (ms)** | 0.8ms | 0.0ms | 0.8ms | 240.7ms |
-| **Patch Success Rate** | 0.0% | 0.0% | 0.0% | 100.0% |
+### 🛡️ Provenance & Hashes
+- **Configuration Hash:** `c09fce1b2ce1b13b`
+- **Rule Set Hash:** `e3b0c44298fc1c14`
+- **Prompt Template Hash:** `69fe411a8cec06b7`
+- **Benchmark Source Hash:** `fe0e7e126571d894`
+- **Model/Provider Identifier:** `mock` (`ec864fe99b539704`)
 
-### 📌 Key Empirical Takeaways
-1. **False Positive Elimination**: M4 achieves an FPR of **0.0%** (vs M1's **0.0%** and M2's **66.7%**) due to dynamic execution tracing inside the sandbox quarantine.
-2. **Token Efficiency**: M4 requires only **48.0 tokens/func** compared to **359.5 tokens/func** in M2 (AI Only) via deterministic fast cascade triage.
-3. **Verified Patch Assurance**: M4 delivers **100.0%** verified patches (3-gate verified), eliminating broken code hallucinations.
+### 📊 Comparative Ablation Matrix
+
+| Metric | M1: Rules | M2: AI Only | M3: Hybrid | M4: Full SageArmor | Bandit Baseline | Semgrep Baseline |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: |
+| **Evaluated Cases** | 100 | 100 | 100 | 100 | 100 | 100 |
+| **True Positives (TP)** | 26 | 50 | 26 | 21 | 38 | 28 |
+| **False Positives (FP)** | 6 | 6 | 2 | 0 | 11 | 0 |
+| **Precision** | 0.81 | 0.89 | 0.93 | 1.00 | 0.78 | 1.00 |
+| **Recall** | 0.52 | 1.00 | 0.52 | 0.42 | 0.76 | 0.56 |
+| **False Positive Rate (FPR)** | 12.0% | 12.0% | 4.0% | 0.0% | 22.0% | 0.0% |
+| **F1 Score** | 0.63 | 0.94 | 0.67 | 0.59 | 0.77 | 0.72 |
+| **Verified Precision** | 0.81 | 0.89 | 0.93 | 1.00 | 0.78 | 1.00 |
+| **Tokens / Function** | 0 | 189 | 60 | 38 | 0 | 0 |
+| **Latency p50 (ms)** | 0.3ms | 0.0ms | 0.3ms | 0.5ms | 0.0ms | 0.0ms |
+| **Latency p95 (ms)** | 0.5ms | 0.0ms | 0.5ms | 2121.4ms | 0.0ms | 0.0ms |
+| **Patch Success Rate** | 0.0% | 0.0% | 0.0% | 100.0% | 0.0% | 0.0% |
+
+### 🔬 Multi-Gate Verification Breakdown (M4)
+- **Gate A (Parse & Compile):** `100.0%`
+- **Gate B (Differential Exploit Proof):** `100.0%`
+- **Gate C (Project Tests / Benign Preservation):** `100.0%`
+- **Gate D (Rescan Cleanliness):** `100.0%`
+- **Gate E (Diff & Path Constraints):** `100.0%`
+- **Cache Hit Rate:** `0.0%`
+- **Latency Run Variance:** `532902.72`
