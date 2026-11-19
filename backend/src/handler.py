@@ -503,8 +503,14 @@ def _invoke_model_json(prompt, max_tokens=600):
     return create_provider(_get_model_provider()).complete_json(prompt, max_tokens=max_tokens)
 
 
-def _invoke_model_text(prompt, max_tokens=1200):
-    return create_provider(_get_model_provider()).complete(prompt, max_tokens=max_tokens).text.strip()
+def _invoke_model_text(prompt, max_tokens=1200, timeout=None, retries=None):
+    provider = create_provider(_get_model_provider())
+    # Interactive callers (the copilot) cap the wait so a slow provider falls back quickly.
+    if timeout is not None and hasattr(provider, "timeout"):
+        provider.timeout = min(float(provider.timeout), float(timeout))
+    if retries is not None and hasattr(provider, "retries"):
+        provider.retries = min(int(provider.retries), int(retries))
+    return provider.complete(prompt, max_tokens=max_tokens).text.strip()
 
 
 def _local_static_review(code_snippet):
@@ -538,71 +544,112 @@ def _local_static_review(code_snippet):
 
 
 def _local_copilot_answer(question, intelligence, vulnerabilities=None):
+    """
+    Rule-based copilot reply used only when the LLM provider fails. It reads the
+    question's intent (greeting, help, list, explain, exploit, fix, priority) instead
+    of always reciting the top finding, and answers in the same Markdown the model uses.
+    """
+    import re
+
     risk_ranking = intelligence.get('risk_ranking', []) if isinstance(intelligence, dict) else []
     vulnerabilities = vulnerabilities if isinstance(vulnerabilities, list) else []
-    q = (question or '').lower()
+    q = (question or '').strip().lower()
+    words = set(re.findall(r"[a-z0-9']+", q))
 
-    def _match_vuln(issue_name):
+    def has(*terms):
+        return any((t in q) if ' ' in t else (t in words) for t in terms)
+
+    def match_vuln(issue_name):
         target = (issue_name or '').strip().lower()
         for vuln in vulnerabilities:
             if str(vuln.get('issue', '')).strip().lower() == target:
                 return vuln
         return vulnerabilities[0] if vulnerabilities else {}
 
-    if risk_ranking:
-        target_index = 0
-        import re
-        match = re.search(r'(\d+)(?:st|nd|rd|th)?|first|second|third|fourth|fifth', q)
-        if match:
-            group = match.group(0).lower()
-            word_to_num = {'first': 0, 'second': 1, 'third': 2, 'fourth': 3, 'fifth': 4}
-            if group in word_to_num:
-                target_index = word_to_num[group]
-            else:
-                num = ''.join(filter(str.isdigit, group))
-                if num:
-                    target_index = int(num) - 1
+    count = len(risk_ranking)
+    capabilities = (
+        "I can explain each finding, show how an attacker would exploit it, rank what to fix first, "
+        "and give corrected code. Try: *\"Which issue should I fix first?\"* or *\"Show me the fixed code.\"*"
+    )
 
-        target_index = max(0, min(target_index, len(risk_ranking) - 1))
-        top = risk_ranking[target_index]
-        
-        issue = top.get('issue', 'unknown issue')
-        score = top.get('priority_score', 'n/a')
-        severity = top.get('severity', 'Unknown')
-        exploit = top.get('exploitability', {}).get('level', 'Unknown')
-        matched_vuln = _match_vuln(issue)
-        patch = (
-            matched_vuln.get('remediation', {}).get('patch')
-            or matched_vuln.get('suggested_fix')
-            or 'Apply the remediation patch shown in Findings and re-run scan.'
-        )
-        reason = matched_vuln.get('explanation') or 'This issue has a high combined risk score in the current context.'
-
-        if 'fix' in q or 'what should i' in q or 'priority' in q:
-            prefix = "Fix this first" if target_index == 0 else "For this issue"
-            return (
-                f"{prefix}: {issue}.\n"
-                f"Why: severity {severity}, exploitability {exploit}, priority score {score}/10.\n"
-                f"Action: {patch}\n"
-                "Then re-run scan and move to the next highest ranked issue in the Risk Panel."
-            )
-
-        if 'why' in q or 'risk' in q or 'explain' in q:
-            return (
-                f"{issue} is a significant risk because it combines {severity} severity with {exploit} exploitability (score {score}/10).\n"
-                f"Why it matters: {reason}\n"
-                f"Next fix action: {patch}"
-            )
-
+    # Small talk and meta questions get a direct answer, not a recited finding.
+    if has('thanks', 'thank', 'thx', 'cheers'):
+        return "You're welcome. Re-run the scan after applying a fix to confirm it is resolved."
+    if not count:
         return (
-            f"Regarding '{issue}' (severity: {severity}, exploitability: {exploit}, priority score: {score}/10). "
-            f"Recommended next action: {patch}"
+            "Hi! There are no scan findings to discuss yet. Run a scan, then ask me about the results.\n\n"
+            + capabilities
         )
+    summary_lines = [
+        f"{i + 1}. **{r.get('issue', 'Unknown issue')}**: {r.get('severity', 'Unknown')} severity, "
+        f"priority {r.get('priority_score', 'n/a')}/10"
+        for i, r in enumerate(risk_ranking[:5])
+    ]
+    plural = 's' if count != 1 else ''
+    summary = f"The scan found **{count}** issue{plural}:\n\n" + "\n".join(summary_lines)
+    if has('hi', 'hello', 'hey', 'yo', 'hola') and len(words) <= 3:
+        return f"Hi! {summary}\n\n{capabilities}"
+    if has('help', 'what can you do', 'who are you', 'what are you'):
+        return f"{capabilities}\n\n{summary}"
+    if has('list', 'summary', 'summarize', 'overview', 'how many', 'all issues', 'all findings'):
+        return summary
 
+    # Pick the finding the question refers to: an ordinal, else a name it mentions, else the top one.
+    target_index = 0
+    ordinals = {'first': 0, 'second': 1, 'third': 2, 'fourth': 3, 'fifth': 4,
+                '1st': 0, '2nd': 1, '3rd': 2, '4th': 3, '5th': 4}
+    picked = next((ordinals[w] for w in ordinals if w in words and not has('fix first', 'first fix')), None)
+    if picked is not None:
+        target_index = picked
+    else:
+        for i, r in enumerate(risk_ranking):
+            name = str(r.get('issue', '')).lower()
+            if ('sql' in q and 'sql' in name) or (('command' in q or 'shell' in q) and 'command' in name) \
+                    or (('path' in q or 'traversal' in q) and 'path' in name) or (('xss' in q or 'script' in q) and 'xss' in name):
+                target_index = i
+                break
+    target_index = max(0, min(target_index, count - 1))
+    top = risk_ranking[target_index]
+    issue = top.get('issue', 'unknown issue')
+    score = top.get('priority_score', 'n/a')
+    severity = top.get('severity', 'Unknown')
+    exploit = top.get('exploitability', {}).get('level', 'Unknown')
+    vuln = match_vuln(issue)
+    line = vuln.get('line')
+    where = f" (line {line})" if line else ""
+    remediation = vuln.get('remediation') if isinstance(vuln.get('remediation'), dict) else {}
+    patch = (remediation.get('patch') or vuln.get('suggested_fix') or '').strip()
+    # Stored patches are often cut from inside a function: the first line has lost its indent but
+    # the rest keep theirs. Dedent the remaining lines so the snippet lines up.
+    patch_lines = patch.splitlines()
+    if len(patch_lines) > 1 and patch_lines[0] == patch_lines[0].lstrip():
+        import textwrap
+        patch = "\n".join([patch_lines[0], textwrap.dedent("\n".join(patch_lines[1:]))])
+    reason = vuln.get('explanation') or 'It combines a dangerous operation with input an attacker can control.'
+    attack = vuln.get('poc_exploit_scenario') or vuln.get('attack_vector') or ''
+    if patch:
+        patch_block = "\n\n```\n" + patch + "\n```"
+    else:
+        patch_block = "\n\nApply the remediation shown in the Findings tab, then re-run the scan."
+
+    if has('fix', 'patch', 'remediate', 'remediation', 'repair', 'solve', 'secure', 'corrected', 'code'):
+        if has('first', 'priority', 'which'):
+            return (
+                f"Fix **{issue}**{where} first: {severity} severity, {exploit} exploitability, "
+                f"priority {score}/10, the highest in this scan.{patch_block}"
+            )
+        return f"**Fix for {issue}**{where}{patch_block}\n\nRe-run the scan afterwards to confirm it is gone."
+    if has('priority', 'prioritize', 'which', 'order', 'worst', 'urgent', 'start'):
+        return (
+            f"Start with **{issue}**{where}: {severity} severity, {exploit} exploitability, "
+            f"priority {score}/10.{patch_block}"
+        )
+    if has('exploit', 'attack', 'attacker', 'hack', 'payload', 'poc', 'abuse'):
+        body = attack or f"An attacker sends crafted input that reaches the vulnerable call{where} unchanged."
+        return f"**How {issue} could be exploited**{where}\n\n{body}"
     return (
-        "No high-confidence exploitable issue was ranked in local fallback mode. "
-        "Next action: review Findings, patch obvious input validation and secret-handling issues, and re-run scan. "
-        "For deeper context, enable model-powered analysis."
+        f"**{issue}**{where}: {severity} severity, {exploit} exploitability, priority {score}/10.\n\n"
+        f"{reason}\n\n**How to fix it:**{patch_block}"
     )
 
 
@@ -1282,6 +1329,31 @@ def simulate(event, context):
         return _json_response(500, {"error": str(e)})
 
 
+# Hard wall-clock limit for one copilot reply. The HTTP timeout only bounds each socket
+# read, so a slowly trickling provider response could otherwise hang the chat for minutes.
+COPILOT_TIMEOUT_SECONDS = float(os.getenv("COPILOT_TIMEOUT_SECONDS", "40"))
+_COPILOT_POOL = None
+
+
+def _invoke_copilot_model(prompt):
+    """Run the model call under a hard deadline; raise TimeoutError when it is exceeded."""
+    import concurrent.futures
+    global _COPILOT_POOL
+    if _COPILOT_POOL is None:
+        _COPILOT_POOL = concurrent.futures.ThreadPoolExecutor(max_workers=4, thread_name_prefix="copilot")
+    # Successful Gemini replies take ~3-10s, while overloaded requests either fail fast (503) or
+    # hang for a minute. So cut each attempt short and retry once, then move to a backup model.
+    per_attempt_timeout = max(5.0, min(12.0, COPILOT_TIMEOUT_SECONDS / 3))
+    future = _COPILOT_POOL.submit(
+        _invoke_model_text, prompt, 1500, per_attempt_timeout, 1
+    )
+    try:
+        return future.result(timeout=COPILOT_TIMEOUT_SECONDS)
+    except concurrent.futures.TimeoutError:
+        future.cancel()
+        raise TimeoutError(f"AI model did not answer within {COPILOT_TIMEOUT_SECONDS:.0f}s")
+
+
 def copilot_chat(event, context):
     try:
         body = _parse_body(event)
@@ -1302,14 +1374,14 @@ def copilot_chat(event, context):
             history=history,
         )
         try:
-            answer = _invoke_model_text(prompt, max_tokens=1500)
+            answer = _invoke_copilot_model(prompt)
             mode = "model"
             note = None
         except Exception as err:
-            print(f"[handler] Copilot using local fallback: {str(err)}")
+            print(f"[handler] Copilot using local fallback: {redact_secrets(str(err))}", flush=True)
             answer = _local_copilot_answer(question, intelligence, vulnerabilities)
             mode = "local-fallback"
-            note = "Model-powered copilot unavailable; returned local fallback explanation."
+            note = "The AI model did not respond, so this is a basic built-in answer. Try again in a moment for a full reply."
 
         payload = {
             "answer": answer,

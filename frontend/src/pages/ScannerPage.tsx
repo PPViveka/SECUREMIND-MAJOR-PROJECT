@@ -74,7 +74,8 @@ type SimulationData = {
   chain_summary?: string; accessible_data?: string[];
   likely_impact?: string[]; compromise_probability?: string;
 };
-type ChatMessage = { role: 'user' | 'assistant'; text: string };
+// `note` marks a reply that came from the built-in fallback because the AI model did not respond.
+type ChatMessage = { role: 'user' | 'assistant'; text: string; note?: string };
 type AttackGraph = { nodes: AttackNode[]; edges: AttackEdge[]; attack_paths?: AttackPath[]; ast_derived?: boolean };
 type RepoStats = Record<string, unknown>;
 
@@ -393,12 +394,13 @@ export default function ScannerPage() {
     if (!question) return;
     if (isChatLoading) return;
     // Earlier turns, without the canned greeting, so the copilot can answer follow-ups.
-    const history = chatMessages.slice(1).slice(-6);
+    const history = chatMessages.slice(1).slice(-6).map(({ role, text }) => ({ role, text }));
     setChatMessages(prev => [...prev, { role: 'user', text: question }]);
     setChatInput(''); setIsChatLoading(true);
     try {
       const result = await postJson('/copilot', { code: codeSnippet, language, vulnerabilities: scanResults?.vulnerabilities || [], question, history });
-      setChatMessages(prev => [...prev, { role: 'assistant', text: result.error || result.answer || 'No response from security copilot.' }]);
+      const note = result.analysis_mode === 'local-fallback' ? (result.note || 'Basic built-in answer: the AI model did not respond.') : undefined;
+      setChatMessages(prev => [...prev, { role: 'assistant', text: result.error || result.answer || 'No response from security copilot.', note }]);
     } catch { setChatMessages(prev => [...prev, { role: 'assistant', text: 'Copilot endpoint is unreachable. Please verify backend routes.' }]); }
     finally { setIsChatLoading(false); }
   };
@@ -931,6 +933,9 @@ export default function ScannerPage() {
                     <div className="flex-1 overflow-y-auto space-y-4 mb-4 pr-2">
                        {chatMessages.map((m, i) => (
                          <div key={i} className={`p-3 rounded-xl max-w-[85%] text-sm ${m.role === 'user' ? 'ml-auto bg-blue-500/20 border border-blue-500/30 whitespace-pre-wrap' : 'mr-auto bg-white/5 border border-white/10 text-white/80'}`}>
+                           {m.note && (
+                             <div className="mb-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-2 py-1 text-[11px] text-amber-300">{m.note}</div>
+                           )}
                            {m.role === 'user' ? m.text : <ChatMarkdown text={m.text} />}
                          </div>
                        ))}
@@ -938,8 +943,9 @@ export default function ScannerPage() {
                        <div ref={chatBottomRef} />
                     </div>
                     <div className="flex gap-2">
-                       <input value={chatInput} onChange={e => setChatInput(e.target.value)} onKeyDown={e => e.key === 'Enter' && askCopilot()} placeholder="Ask security questions..." className="flex-1 bg-white/5 border border-white/10 rounded-xl px-4 py-2 text-sm text-white focus:border-cyan-500/50 outline-none" />
-                       <button onClick={askCopilot} className="bg-cyan-500 hover:bg-cyan-400 text-white p-2 rounded-xl transition-all"><Send className="w-5 h-5" /></button>
+                       {/* Typing stays possible while a reply loads; sending waits, and the button shows it. */}
+                       <input value={chatInput} onChange={e => setChatInput(e.target.value)} onKeyDown={e => e.key === 'Enter' && !isChatLoading && askCopilot()} placeholder={isChatLoading ? 'Waiting for the reply… you can type your next question' : 'Ask security questions...'} className="flex-1 bg-white/5 border border-white/10 rounded-xl px-4 py-2 text-sm text-white focus:border-cyan-500/50 outline-none" />
+                       <button onClick={askCopilot} disabled={isChatLoading || !chatInput.trim()} title={isChatLoading ? 'Waiting for the current reply' : 'Send'} className="bg-cyan-500 hover:bg-cyan-400 disabled:bg-cyan-500/30 disabled:cursor-not-allowed text-white p-2 rounded-xl transition-all"><Send className="w-5 h-5" /></button>
                     </div>
                   </div>
                 )}

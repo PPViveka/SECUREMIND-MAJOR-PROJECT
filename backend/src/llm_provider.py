@@ -204,8 +204,13 @@ class GeminiProvider(LLMProvider):
     def __init__(self):
         self.api_key = os.getenv("GEMINI_API_KEY", "")
         self.model = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite")
+        # Backup models tried in order when the primary is overloaded (503), rate-limited (429),
+        # timed out or unavailable to this key (404). Free-tier capacity varies a lot per model.
+        fallbacks = os.getenv("GEMINI_FALLBACK_MODELS", "gemini-3-flash-preview,gemini-flash-lite-latest")
+        self.fallback_models = [m.strip() for m in fallbacks.split(",") if m.strip() and m.strip() != self.model]
         self.timeout = float(os.getenv("LLM_TIMEOUT_SECONDS", "60"))
         self.retries = max(0, int(os.getenv("LLM_RETRIES", "2")))
+        self.last_model_used = None
 
     def complete(self, prompt: str, max_tokens: int = 600, as_json: bool = False) -> ProviderResult:
         if not self.api_key:
@@ -223,7 +228,20 @@ class GeminiProvider(LLMProvider):
             "contents": [{"role": "user", "parts": [{"text": prompt}]}],
             "generationConfig": generation_config,
         }
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{self.model}:generateContent"
+        last_error = None
+        for model in [self.model] + self.fallback_models:
+            try:
+                result = self._complete_with_model(model, prompt, payload)
+                self.last_model_used = model
+                return result
+            except ProviderAuthError:
+                raise  # same key for every model: trying others cannot help
+            except ProviderError as exc:
+                last_error = exc
+        raise last_error or ProviderError("Gemini provider failed")
+
+    def _complete_with_model(self, model: str, prompt: str, payload: Dict[str, Any]) -> ProviderResult:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
         last_error = None
         for attempt in range(self.retries + 1):
             try:
@@ -239,6 +257,9 @@ class GeminiProvider(LLMProvider):
                     raise ProviderRateLimitError("Gemini rate limit exceeded (429)")
                 if response.status_code >= 500:
                     raise ProviderUnavailableError(f"Gemini provider unavailable ({response.status_code})")
+                if response.status_code == 404:
+                    # Model retired or not enabled for this key: no point retrying it.
+                    raise ProviderUnavailableError(f"Gemini model {model} not available (404)")
                 if response.status_code != 200:
                     raise ProviderError(f"Gemini provider rejected request ({response.status_code})")
                 body = response.json()
@@ -258,10 +279,14 @@ class GeminiProvider(LLMProvider):
                 }
                 return ProviderResult(text=text, usage=usage)
             except requests.Timeout:
-                last_error = ProviderTimeoutError(f"Gemini request timed out after {self.timeout}s")
+                last_error = ProviderTimeoutError(f"Gemini {model} timed out after {self.timeout}s")
             except (ProviderAuthError,) as exc:
                 raise exc
-            except (ProviderRateLimitError, ProviderUnavailableError, ProviderError) as exc:
+            except ProviderUnavailableError as exc:
+                if "(404)" in str(exc):
+                    raise
+                last_error = exc
+            except (ProviderRateLimitError, ProviderError) as exc:
                 last_error = exc
             except (requests.RequestException, KeyError, TypeError, ValueError) as exc:
                 last_error = ProviderError(f"Gemini provider request failed: {exc}")
@@ -270,7 +295,7 @@ class GeminiProvider(LLMProvider):
                 jitter = random.uniform(0.05, 0.15)
                 time.sleep(min(4.0, 0.5 * (2 ** attempt)) + jitter)
 
-        raise last_error or ProviderError("Gemini provider failed")
+        raise last_error or ProviderError(f"Gemini {model} failed")
 
 
 class BedrockProvider(LLMProvider):

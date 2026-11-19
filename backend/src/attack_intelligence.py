@@ -401,11 +401,18 @@ def build_copilot_prompt(
 
     sections.append(f"Developer question:\n{safe_question}")
     sections.append(
-        "Answer in Markdown. Lead with the direct answer, then explain briefly. "
-        "Refer to real function names and line numbers from the code. "
-        "When the developer asks for a fix or for code, include the corrected code in a fenced code block "
-        "using the code's own language and the correct API for the libraries it uses "
-        "(for example sqlite3 uses ? placeholders). "
-        "Keep it under about 250 words, not counting code."
+        "How to answer:\n"
+        "- Answer exactly what was asked, and size the reply to the question. Do not volunteer a full "
+        "report, an exploit or a fix that was not asked for.\n"
+        "- Greetings, thanks or small talk (e.g. \"hi\"): reply in one or two friendly sentences, say how many "
+        "issues the scan found, and offer what you can help with. No code, no headings.\n"
+        "- A vague question (e.g. \"tell me about it\"): give a short overview of the findings, then offer "
+        "to go deeper on one.\n"
+        "- A general security question not about this code: answer it generally and briefly.\n"
+        "- A follow-up (\"the other one\", \"why?\"): resolve it from the earlier conversation.\n"
+        "- Only when the developer asks for a fix or code: include corrected code in a fenced code block, "
+        "in the code's own language, using the correct API for its libraries (for example sqlite3 uses ? placeholders).\n"
+        "Use Markdown, lead with the direct answer, refer to real function names and line numbers, and stay "
+        "under about 200 words, not counting code."
     )
     return "\n\n".join(sections)
