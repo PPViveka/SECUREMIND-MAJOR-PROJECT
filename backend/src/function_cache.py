@@ -31,7 +31,20 @@ RISKY_SINKS = {
     "deserialize": ["pickle", "yaml.load", "loads", "unserialize"],
 }
 
-CACHE_RULE_VERSION = "rules-v1"
+def compute_rule_set_hash() -> str:
+    """Hash the live SAST rule registry so cached results expire when rules change."""
+    try:
+        from .sast_scanner import SASTScanner
+        registry = getattr(SASTScanner, "RULE_REGISTRY", {}) or {}
+        canonical = json.dumps(registry, sort_keys=True, default=str, separators=(",", ":"))
+        return "rules-" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
+    except Exception:
+        return "rules-unknown"
+
+
+# Bump when sandbox verdict logic changes, so cached verification results are recomputed.
+SANDBOX_VERIFIER_VERSION = "verifier-2"
+CACHE_RULE_VERSION = f"{compute_rule_set_hash()}+{SANDBOX_VERIFIER_VERSION}"
 CACHE_PROMPT_VERSION = "prompt-v1"
 
 

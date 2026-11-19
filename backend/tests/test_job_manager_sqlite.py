@@ -92,12 +92,15 @@ class TestJobManagerSQLite(unittest.TestCase):
     def test_stale_job_reaping(self):
         job_id = manager.create_job("job-stale", ttl_seconds=1)
         # Manually alter expires_at to be in the past
-        with manager._connect() as conn:
+        conn = manager._connect()
+        try:
             conn.execute(
                 "UPDATE jobs SET expires_at = ? WHERE job_id = ?",
                 (time.time() - 100, job_id),
             )
             conn.commit()
+        finally:
+            conn.close()
 
         reaped = manager.reap_stale_jobs()
         self.assertGreater(reaped, 0)

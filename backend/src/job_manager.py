@@ -209,15 +209,6 @@ def create_job(job_id: str = None, ttl_seconds: int = 86400) -> str:
     return job_id
 
 
-def add_job_event(job_id: str, event_type: str, detail: str = ""):
-    def mutate(job):
-        job.setdefault("events", []).append({
-            "timestamp": time.time(),
-            "type": event_type,
-            "detail": redact_secrets(detail),
-        })
-    return _update(job_id, mutate)
-
 
 
 def cancel_job(job_id: str) -> Optional[Dict[str, Any]]:
@@ -293,7 +284,7 @@ def add_job_event(job_id: str, event_type: str, detail: Any = None):
             "timestamp": time.time(),
             "event": event_type,
             "type": event_type,
-            "detail": detail,
+            "detail": redact_secrets(detail) if isinstance(detail, str) else detail,
         })
     return _update(job_id, mutate)
 

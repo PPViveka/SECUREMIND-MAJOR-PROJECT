@@ -13,24 +13,52 @@ services:
       - HOST=0.0.0.0
       - PORT=6060
       - ENVIRONMENT=production
-      - SAGEARMOR_AUTH_TOKEN=${SAGEARMOR_AUTH_TOKEN:?Error: SAGEARMOR_AUTH_TOKEN must be set before launching}
+      - "SAGEARMOR_AUTH_TOKEN=${SAGEARMOR_AUTH_TOKEN:?SAGEARMOR_AUTH_TOKEN must be set before launching}"
       - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:5173,http://localhost:80,http://localhost:3000}
       - SAGE_ARMOR_RATE_LIMIT=120
       - LLM_PROVIDER=${LLM_PROVIDER:-mock}
       - MODEL_PROVIDER=${MODEL_PROVIDER:-mock}
       - NVIDIA_API_KEY=${NVIDIA_API_KEY:-}
-      - SAGEARMOR_SANDBOX_RUNTIME=docker
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - GEMINI_MODEL=${GEMINI_MODEL:-gemini-3.5-flash-lite}
+      # Single isolation setting read by sandbox_verifier.py: docker | gvisor
+      - SAGE_ARMOR_ISOLATION_RUNTIME=${SAGE_ARMOR_ISOLATION_RUNTIME:-docker}
+      # Sandbox containers are launched through the restricted socket proxy below;
+      # the backend itself runs as a non-root user and never mounts docker.sock.
+      - DOCKER_HOST=tcp://sandbox-runner:2375
     volumes:
-      # Access to the Docker daemon enables isolated ephemeral sandbox containers via stdin streaming.
-      # For hardened production environments, bind to a rootless socket or gVisor runtime.
-      - /var/run/docker.sock:/var/run/docker.sock
       - backend-data:/app/backend/data
+    depends_on:
+      - sandbox-runner
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:6060/healthz"]
+      # CMD-SHELL so the token is expanded inside the container ($$ escapes Compose interpolation).
+      test: ["CMD-SHELL", "curl -fsS -H \"X-SageArmor-Token: $$SAGEARMOR_AUTH_TOKEN\" http://localhost:6060/healthz || exit 1"]
       interval: 15s
       timeout: 5s
       retries: 3
       start_period: 5s
+
+  # Restricted Docker API proxy: the only service that mounts the Docker socket.
+  # It exposes just the endpoints needed to run, attach to and remove sandbox containers.
+  sandbox-runner:
+    image: tecnativa/docker-socket-proxy:3.4
+    container_name: sagearmor-sandbox-runner
+    restart: unless-stopped
+    environment:
+      - CONTAINERS=1
+      - POST=1
+      - IMAGES=1
+      - INFO=1
+      - BUILD=0
+      - EXEC=0
+      - NETWORKS=0
+      - VOLUMES=0
+      - SECRETS=0
+      - SERVICES=0
+      - SWARM=0
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    # Not published to the host; reachable only from the backend on the compose network.
 
   frontend:
     build:
@@ -40,11 +68,15 @@ services:
     restart: unless-stopped
     ports:
       - "80:80"
+    environment:
+      # Injected by nginx into every /api/ request so the dashboard is authenticated
+      # without shipping the token inside the browser bundle.
+      - "SAGEARMOR_AUTH_TOKEN=${SAGEARMOR_AUTH_TOKEN:?SAGEARMOR_AUTH_TOKEN must be set before launching}"
     depends_on:
       backend:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:80/"]
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://127.0.0.1:80/"]
       interval: 30s
       timeout: 5s
       retries: 3

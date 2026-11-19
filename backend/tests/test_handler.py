@@ -29,10 +29,10 @@ class TestReviewCodeInputValidation(unittest.TestCase):
 
     def test_provider_selection_does_not_switch_from_available_keys(self):
         handler, _ = self._patched_import()
-        with patch.dict(os.environ, {'MODEL_PROVIDER': '', 'NVIDIA_API_KEY': 'present'}):
+        with patch.dict(os.environ, {'LLM_PROVIDER': '', 'MODEL_PROVIDER': '', 'NVIDIA_API_KEY': 'present'}):
             self.assertEqual(handler._get_model_provider(), 'bedrock')
 
-        with patch.dict(os.environ, {'MODEL_PROVIDER': 'unsupported', 'NVIDIA_API_KEY': ''}):
+        with patch.dict(os.environ, {'LLM_PROVIDER': '', 'MODEL_PROVIDER': 'unsupported', 'NVIDIA_API_KEY': ''}):
             with self.assertRaises(ValueError):
                 handler._get_model_provider()
 

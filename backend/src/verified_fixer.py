@@ -233,7 +233,7 @@ def gate_c_project_tests(
             return True, "pass", "Gate C PASS: Benign input checks passed (project test_dir not specified)"
         return False, "skipped", "Gate C SKIPPED: No test_dir provided or directory not found"
 
-    from .sandbox_verifier import SandboxVerifier
+    from .sandbox_verifier import SandboxVerifier, SANDBOX_IMAGE
     use_docker = SandboxVerifier._is_docker_live() if hasattr(SandboxVerifier, "_is_docker_live") else False
     if not use_docker and os.getenv("SAGE_ARMOR_UNSAFE_LOCAL_SANDBOX") != "1":
         return False, "skipped", "Gate C SKIPPED: Docker sandbox unavailable and unsafe local fallback disabled"
@@ -255,7 +255,7 @@ def gate_c_project_tests(
                 "docker", "run", "--rm", "--network", "none",
                 "--pids-limit", "64", "--memory", "256m", "--cpus", "1.0",
                 "-v", f"{project_dir}:/workspace",
-                "-w", "/workspace", "python:3.11-slim",
+                "-w", "/workspace", SANDBOX_IMAGE,
                 "python", "-m", "pytest", test_dir, "-q", "--tb=no"
             ]
             clean_env = None

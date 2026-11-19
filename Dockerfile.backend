@@ -15,10 +15,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY backend/requirements.txt .
-RUN pip install --no-cache-dir --user -r requirements.txt
+RUN python -m venv /opt/venv && /opt/venv/bin/pip install --no-cache-dir -r requirements.txt
 
 # -----------------------------------------------------------------------------
-# Stage 2: Production Runtime
+# Stage 2: Production Runtime (non-root)
 # -----------------------------------------------------------------------------
 FROM python:3.11-slim AS runner
 
@@ -26,23 +26,29 @@ WORKDIR /app
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PATH="/root/.local/bin:$PATH" \
+    PATH="/opt/venv/bin:$PATH" \
     PORT=6060 \
     HOST=0.0.0.0
 
+# docker-cli provides only the CLI used to launch sandbox containers through
+# DOCKER_HOST (the sandbox-runner socket proxy). This container never mounts docker.sock.
+# (Debian's docker.io package no longer ships the CLI, only the daemon.)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
-    docker.io \
-    && rm -rf /var/lib/apt/lists/*
+    docker-cli \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --create-home --uid 10001 sagearmor
 
-COPY --from=builder /root/.local /root/.local
+COPY --from=builder /opt/venv /opt/venv
 
-COPY backend/ /app/backend/
+COPY --chown=sagearmor:sagearmor backend/ /app/backend/
+RUN mkdir -p /app/backend/data && chown -R sagearmor:sagearmor /app/backend
 WORKDIR /app/backend
+USER sagearmor
 
 EXPOSE 6060
 
 HEALTHCHECK --interval=15s --timeout=5s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:6060/healthz || exit 1
+    CMD curl -fsS -H "X-SageArmor-Token: ${SAGEARMOR_AUTH_TOKEN}" http://localhost:6060/healthz || exit 1
 
 CMD ["python3", "dev_server.py"]

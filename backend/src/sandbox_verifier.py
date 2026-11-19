@@ -35,6 +35,57 @@ except ImportError:
         return text
 
 
+def _safe_log(msg: Any) -> None:
+    """Print a log line with any secrets redacted."""
+    print(redact_secrets(str(msg)))
+
+
+# Pinned sandbox image; its real digest is recorded in every audit record.
+SANDBOX_IMAGE = "python:3.11-slim"
+_IMAGE_DIGEST_CACHE: Dict[str, str] = {}
+
+
+def sandbox_image_digest(image: str = SANDBOX_IMAGE) -> str:
+    """Return the local Docker image digest (cached), or 'unavailable:<image>'."""
+    if image in _IMAGE_DIGEST_CACHE:
+        return _IMAGE_DIGEST_CACHE[image]
+    digest = f"unavailable:{image}"
+    if shutil.which("docker"):
+        try:
+            out = subprocess.run(
+                ["docker", "image", "inspect", "--format", "{{json .RepoDigests}}|{{.Id}}", image],
+                capture_output=True, text=True, timeout=3.0,
+            )
+            if out.returncode == 0 and out.stdout.strip():
+                repo_digests, _, image_id = out.stdout.strip().partition("|")
+                found = re.search(r"sha256:[0-9a-f]{64}", repo_digests)
+                digest = found.group(0) if found else (image_id.strip() or digest)
+        except Exception:
+            pass
+    _IMAGE_DIGEST_CACHE[image] = digest
+    return digest
+
+
+def to_function_relative_line(file_line: int, function_code: str, function_name: str, function_start_line: int = 1) -> int:
+    """
+    Convert a file-absolute line number into a 1-based line relative to the
+    function's ``def`` line, which is what ``verify_vulnerability`` expects.
+    Lines that already fall inside the function body are passed through.
+    """
+    try:
+        file_line = int(file_line or 1)
+    except (TypeError, ValueError):
+        return 1
+    lines = function_code.splitlines() or [""]
+    def_pattern = re.compile(r"^\s*(?:async\s+)?def\s+" + re.escape(function_name or "") + r"\s*\(")
+    def_offset = next((i for i, line in enumerate(lines) if def_pattern.match(line)), 0)
+    if function_start_line and function_start_line > 1:
+        relative = file_line - (function_start_line + def_offset) + 1
+        if 1 <= relative <= len(lines) - def_offset:
+            return relative
+    return max(1, min(file_line, len(lines)))
+
+
 # Standard test inputs for dynamic trace verification of common classes
 TEST_ATTACK_VECTORS = {
     "sql_injection": [
@@ -108,10 +159,17 @@ except Exception:
 
 # Dynamic stub meta path finder for unresolved third-party imports
 class _StubModule:
-    def __init__(self, name):
+    def __init__(self, name, is_module=False):
         self.__name__ = name
+        self._is_module = is_module
     def __getattr__(self, item):
-        hook_records.append({"kind": "stub_access", "module": self.__name__, "attr": str(item)})
+        # Import-machinery probes (__path__, __loader__, __spec__, ...) are not code using the stub.
+        if item.startswith("__") and item.endswith("__"):
+            raise AttributeError(item)
+        # `from flask import request` reads a name off the stubbed module: binding it is not use.
+        # Using it (request.args, Flask(...)) goes through the returned child stub and is recorded.
+        if not object.__getattribute__(self, "_is_module"):
+            hook_records.append({"kind": "stub_access", "module": self.__name__, "attr": str(item)})
         return _StubModule(f"{self.__name__}.{item}")
     def __call__(self, *args, **kwargs):
         hook_records.append({"kind": "stub_call", "module": self.__name__})
@@ -122,11 +180,14 @@ class _StubFinder:
         import importlib.util
         if fullname in sys.modules or fullname in sys.builtin_module_names:
             return None
-        if fullname in ("nt", "dos", "os2", "mac", "ce", "riscos", "org", "_winapi", "winreg"):
+        # Platform-specific stdlib modules must fail to import normally, never be stubbed.
+        if fullname in ("nt", "dos", "os2", "mac", "ce", "riscos", "org", "_winapi", "winreg",
+                        "posix", "pwd", "grp", "fcntl", "termios", "resource", "_posixsubprocess",
+                        "_posixshmem", "_scproxy", "msvcrt", "_overlapped"):
             return None
         return importlib.util.spec_from_loader(fullname, self)
     def create_module(self, spec):
-        return _StubModule(spec.name)
+        return _StubModule(spec.name, is_module=True)
     def exec_module(self, module):
         pass
 
@@ -310,21 +371,33 @@ class SandboxVerifier:
         },
     }
 
-    def __init__(self, timeout_sec: float = 3.0, max_retries: int = 3, runtime: str = "docker", max_output_bytes: int = 65536):
+    def __init__(self, timeout_sec: float = 3.0, max_retries: int = 3, runtime: Optional[str] = None, max_output_bytes: int = 65536):
         self.timeout_sec = timeout_sec
         self.max_retries = max_retries
-        self.runtime = runtime
+        # One isolation setting: explicit argument, else SAGE_ARMOR_ISOLATION_RUNTIME (docker | gvisor | host).
+        self.runtime = (runtime or os.getenv("SAGE_ARMOR_ISOLATION_RUNTIME") or "docker").strip().lower()
         self.max_output_bytes = max(1024, max_output_bytes)
+
+    _docker_live_cache: Tuple[float, bool] = (0.0, False)
+    _DOCKER_PROBE_TTL_SEC = 30.0
 
     @staticmethod
     def _is_docker_live() -> bool:
-        if not shutil.which("docker"):
-            return False
-        try:
-            chk = subprocess.run(["docker", "info"], capture_output=True, timeout=0.8)
-            return chk.returncode == 0
-        except Exception:
-            return False
+        # `docker info` takes ~0.7-0.9s on Docker Desktop (Windows/macOS), so a sub-second
+        # timeout wrongly reported Docker as down. Probe with a sane timeout and cache briefly,
+        # since this is checked on every sandbox attempt.
+        checked_at, live = SandboxVerifier._docker_live_cache
+        if time.time() - checked_at < SandboxVerifier._DOCKER_PROBE_TTL_SEC:
+            return live
+        live = False
+        if shutil.which("docker"):
+            try:
+                chk = subprocess.run(["docker", "info"], capture_output=True, timeout=5.0)
+                live = chk.returncode == 0
+            except Exception:
+                live = False
+        SandboxVerifier._docker_live_cache = (time.time(), live)
+        return live
 
     @staticmethod
     def _is_gvisor_live() -> bool:
@@ -486,7 +559,7 @@ class SandboxVerifier:
                     use_docker = self._is_docker_live()
 
                 if use_docker:
-                    use_runsc = (self.runtime == "gvisor" or os.getenv("SAGE_ARMOR_ISOLATION_RUNTIME") == "gvisor")
+                    use_runsc = self.runtime == "gvisor"
                     if use_runsc and not self._is_gvisor_live():
                         _safe_log("[sandbox] Warning: gVisor runtime requested but 'runsc' not found in Docker daemon. Running in default hardened container.")
                         use_runsc = False
@@ -500,7 +573,7 @@ class SandboxVerifier:
                         "--env", "PATH=/usr/local/bin:/usr/bin:/bin",
                         "--env", "PYTHONUNBUFFERED=1",
                         "--user", "65534:65534",
-                        "python:3.11-slim", "python", "-",
+                        SANDBOX_IMAGE, "python", "-",
                     ]
                     clean_env = None
                     input_text = harness_code
@@ -728,7 +801,7 @@ class SandboxVerifier:
         audit_record = {
             "input_hash": input_hash,
             "context_hash": context_hash,
-            "sandbox_image_digest": "sha256:sagearmor-sandbox-v1",
+            "sandbox_image_digest": sandbox_image_digest(),
             "harness_hash": harness_hash,
             "canary": redact_secrets(last_attack_input) if last_attack_input else "",
             "hook_records": cleaned_hook_records,
@@ -774,24 +847,7 @@ class SandboxVerifier:
             }
         }
         """
-        from .sast_scanner import SASTScanner
-        # If the code no longer matches any vulnerable patterns, the vulnerability is eliminated
-        sast_hits = SASTScanner.scan_code(source_code)
-        if not sast_hits:
-            return {
-                "verification_status": "unconfirmed",
-                "verified": False,
-                "dynamic_trace": {
-                    "sink_reached": False,
-                    "reached_sink": False,
-                    "sink_line": sink_line,
-                    "executed_lines": [],
-                    "attempts_used": 1,
-                    "duration_ms": 0.0,
-                    "error": None,
-                },
-            }
-
+        # Always execute the sandbox: a clean regex scan is not proof that the exploit is gone.
         exec_res = self.verify_vulnerability(
             function_code=source_code,
             function_name=function_name,
@@ -820,6 +876,8 @@ def apply_verification_gate(
     function_name: str,
     verifier: Optional[SandboxVerifier] = None,
     language: str = "python",
+    function_start_line: int = 1,
+    context_source: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """
     Applies the sandbox exploit gate to a list of vulnerabilities.
@@ -828,6 +886,10 @@ def apply_verification_gate(
     - verified: bool
     - dynamic_trace: trace line data and execution cycles
     Adjusts priority/severity ranking: unconfirmed findings are demoted.
+
+    ``context_source`` is the whole file: the sandbox keeps its imports, constants and the
+    local helpers the target calls (e.g. ``get_db``), so the function can actually run.
+    Without it only ``function_code`` is executed and calls to helpers fail with NameError.
     """
     if not vulnerabilities:
         return []
@@ -850,12 +912,14 @@ def apply_verification_gate(
             v_copy["unconfirmed_note"] = "Static finding retained; dynamic verification is not applicable."
             enriched.append(v_copy)
             continue
-        sink_line = v_copy.get("line", 1)
+        sink_line = to_function_relative_line(
+            v_copy.get("line", 1), function_code, function_name, function_start_line
+        )
         issue = v_copy.get("issue", "")
         poc_scenario = v_copy.get("poc_exploit_scenario", "")
 
         result = active_verifier.verify_vulnerability(
-            function_code=function_code,
+            function_code=context_source or function_code,
             function_name=function_name,
             sink_line=sink_line,
             issue_title=issue,

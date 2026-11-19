@@ -111,7 +111,9 @@ class TestPerformanceAndReliability(unittest.TestCase):
         verifier = sandbox_verifier.SandboxVerifier(runtime="docker")
         with patch('src.sandbox_verifier.SandboxVerifier.isolation_available', return_value=False):
             res = verifier.verify("def safe(): return 1\n", "safe")
-            self.assertIn(res.get("verification_status"), ["unconfirmed", "verified", "refuted"])
+            # With no isolation runtime the verifier must say so rather than guess.
+            self.assertIn(res.get("verification_status"), ["not_applicable", "unconfirmed", "refuted"])
+            self.assertFalse(res.get("verified", False))
 
         # 2. GitHub API unavailable
         with patch('requests.post', side_effect=Exception("GitHub API Down")):

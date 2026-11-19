@@ -117,7 +117,7 @@ def build_repo_map(repo_root, max_files=12000):
                 continue
             total_seen += 1
             abs_path = os.path.join(current_root, name)
-            rel_path = os.path.relpath(abs_path, repo_root)
+            rel_path = os.path.relpath(abs_path, repo_root).replace(os.sep, '/')
 
             try:
                 size = os.path.getsize(abs_path)

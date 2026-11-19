@@ -31,9 +31,6 @@ class SecurityConfig:
     unsafe_local_sandbox: bool = field(
         default_factory=lambda: os.getenv("SAGE_ARMOR_UNSAFE_LOCAL_SANDBOX") == "1"
     )
-    use_gvisor: bool = field(
-        default_factory=lambda: os.getenv("SAGE_ARMOR_USE_GVISOR") == "1"
-    )
 
 
 @dataclass(frozen=True)

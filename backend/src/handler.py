@@ -763,6 +763,8 @@ def _execute_deep_pipeline_sync(
                     function_code=func["code"],
                     function_name=func["name"],
                     language=language,
+                    function_start_line=func.get("start_line", 1),
+                    context_source=code_snippet,
                 )
             else:
                 for fv in func_vulns:
@@ -1107,6 +1109,8 @@ def review_code(event, context):
                                 function_code=func["code"],
                                 function_name=func["name"],
                                 language=language,
+                                function_start_line=func.get("start_line", 1),
+                                context_source=code_snippet,
                             )
                         else:
                             for fv in func_vulns:
@@ -1166,10 +1170,10 @@ def review_code(event, context):
             if not duplicate:
                 response_vulnerabilities.append(finding)
 
-            analysis_result['vulnerabilities'] = normalize_findings(
-                response_vulnerabilities,
-                language=language,
-            )
+        analysis_result['vulnerabilities'] = normalize_findings(
+            response_vulnerabilities,
+            language=language,
+        )
 
         # Fire-and-forget: post findings back to GitHub PR (webhook path only)
         if is_webhook and repo_full_name and pr_number:

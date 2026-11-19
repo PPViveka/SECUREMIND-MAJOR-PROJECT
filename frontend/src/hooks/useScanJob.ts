@@ -4,7 +4,7 @@
  */
 
 import { useState, useCallback, useRef, useEffect } from "react";
-import { NormalizedFinding, JobStatus } from "../types";
+import type { NormalizedFinding, JobStatus } from "../types";
 
 export interface ScanJobState {
   jobId: string | null;

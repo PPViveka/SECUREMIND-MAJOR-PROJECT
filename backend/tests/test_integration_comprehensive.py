@@ -129,7 +129,7 @@ class TestComprehensiveIntegration(unittest.TestCase):
 
     def test_sandbox_limits_enforced(self):
         """Prove sandbox timeout, memory limit, and process termination."""
-        verifier = sandbox_verifier.SandboxVerifier(timeout_sec=0.5, runtime="local")
+        verifier = sandbox_verifier.SandboxVerifier(timeout_sec=0.5, runtime="host")
         res = verifier.verify(
             "import time\ndef looper(cmd):\n    while True:\n        time.sleep(0.1)\n",
             "looper",

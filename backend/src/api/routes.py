@@ -108,6 +108,10 @@ def health_route():
     return lambda_bridge(healthz, request)
 
 
+# Statuses after which a job will not change again; job_manager and the scan engines write "completed".
+TERMINAL_JOB_STATUSES = ("completed", "succeeded", "failed", "cancelled", "interrupted")
+
+
 # SSE Stream Endpoint (FR-805)
 @api_bp.route("/v2/jobs/<job_id>/stream", methods=["GET"])
 def stream_job(job_id):
@@ -132,7 +136,7 @@ def stream_job(job_id):
                     "logs": job.get("logs", [])[-3:],
                 }
                 yield f"event: update\ndata: {json.dumps(data)}\n\n"
-            if job.get("status") in ("succeeded", "failed", "cancelled", "interrupted"):
+            if job.get("status") in TERMINAL_JOB_STATUSES:
                 yield f"event: done\ndata: {json.dumps({'job_id': job_id, 'status': job.get('status')})}\n\n"
                 break
             time.sleep(0.5)
