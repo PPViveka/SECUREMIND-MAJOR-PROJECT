@@ -137,7 +137,7 @@ class TestAutofixEngine(unittest.TestCase):
             }
 
         with patch("src.autofix_engine._clone_repository", side_effect=fake_clone):
-            _run_repo_autofix(job_id, "https://github.com/org/repo", vulns, "tok", "main", "fix", fake_fix)
+            _run_repo_autofix(job_id, "https://github.com/org/repo", vulns, "tok", "main", "fix", fake_fix, include_drafts=True)
 
         job = get_job(job_id)
         self.assertEqual(job["status"], "completed")

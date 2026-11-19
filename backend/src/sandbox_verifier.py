@@ -95,12 +95,12 @@ def to_function_relative_line(file_line: int, function_code: str, function_name:
 try:
     from .sandbox_harness import (
         CANARY_PLACEHOLDER, CATEGORY_SPECS, HARNESS_TEMPLATE, SINK_KINDS, SUPPORTED_CATEGORIES,
-        build_invocation, candidate_strings, fixed_vectors, infer_category, match_sink_evidence, sink_argument,
+        build_invocation, build_case_invocation, candidate_strings, fixed_vectors, infer_category, match_sink_evidence, sink_argument,
     )
 except ImportError:  # imported as a top-level module
     from sandbox_harness import (  # type: ignore
         CANARY_PLACEHOLDER, CATEGORY_SPECS, HARNESS_TEMPLATE, SINK_KINDS, SUPPORTED_CATEGORIES,
-        build_invocation, candidate_strings, fixed_vectors, infer_category, match_sink_evidence, sink_argument,
+        build_invocation, build_case_invocation, candidate_strings, fixed_vectors, infer_category, match_sink_evidence, sink_argument,
     )
 
 # Kept for callers that import the old names.
@@ -471,6 +471,7 @@ class SandboxVerifier:
         Runs the generated harness in a safe, isolated subprocess.
         """
         self.last_hook_records = []
+        self.last_result = {}
         with tempfile.TemporaryDirectory() as temp_dir:
             harness_file = os.path.join(temp_dir, "harness.py")
             with open(harness_file, "w", encoding="utf-8") as f:
@@ -534,6 +535,7 @@ class SandboxVerifier:
                     )
                     data = json.loads(raw_json)
                     self.last_hook_records = data.get("hook_records", [])
+                    self.last_result = data
                     return data.get("unique_executed_lines", []), data.get("success", False), data.get("error")
                 else:
                     return [], False, stderr or "No trace delimiter found in sandbox output"
@@ -725,11 +727,17 @@ class SandboxVerifier:
         issue_title: str,
         ai_poc_scenario: Optional[str] = None,
         model_invoker: Optional[Callable[[str], Any]] = None,
+        replay: Optional[List[Dict[str, Any]]] = None,
+        canary: Optional[str] = None,
     ) -> SandboxExecutionResult:
         """
         Try to exploit the finding: fixed canary-tagged attack strings first, then up to
         ``llm_attempts`` model-written inputs, each informed by the previous trace.
         Verified only when the canary reaches a sink argument with its attack syntax intact.
+
+        ``replay`` (used when re-testing a patch) is a list of earlier inputs
+        ({"payload", "kwargs"}) that are run first, unchanged, with the canary they were
+        recorded with (``canary``).
         """
         start_time = time.time()
         category = infer_category(issue_title)
@@ -750,7 +758,8 @@ class SandboxVerifier:
             return _early(STATUS_NOT_RUN, "Sandbox not run: the Docker isolation runtime is unavailable.")
 
         bundle = self.build_context_bundle(function_code, function_name)
-        canary = "SAGE_" + secrets.token_hex(4)
+        if not (isinstance(canary, str) and re.fullmatch(r"SAGE_[0-9a-fA-F]{4,32}", canary)):
+            canary = "SAGE_" + secrets.token_hex(4)
         attempts: List[Dict[str, Any]] = []
         proof: Optional[Dict[str, Any]] = None
         tried = set()
@@ -764,7 +773,18 @@ class SandboxVerifier:
             attempts.append(att)
             return att if att["status"] in (STATUS_VERIFIED, STATUS_INCONCLUSIVE) else None
 
-        for vector in fixed_vectors(category, canary)[: max(1, self.max_retries)]:
+        for item in (replay or [])[:12]:
+            if not isinstance(item, dict):
+                continue
+            r_payload = item.get("payload")
+            r_kwargs = item.get("kwargs") if isinstance(item.get("kwargs"), dict) else {}
+            if not isinstance(r_payload, str) or r_payload.endswith("…"):
+                continue  # clipped in storage: replaying a truncated input proves nothing
+            proof = _try("replay", r_payload, dict(r_kwargs))
+            if proof:
+                break
+
+        for vector in ([] if proof else fixed_vectors(category, canary)[: max(1, self.max_retries)]):
             proof = _try("fixed", vector, {})
             if proof:
                 break
@@ -875,6 +895,8 @@ class SandboxVerifier:
         cwe_id: str = "",
         sink_line: int = 1,
         model_invoker: Optional[Callable[[str], Any]] = None,
+        replay: Optional[List[Dict[str, Any]]] = None,
+        canary: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Unified interface used by patch validation; same verdicts as verify_vulnerability."""
         exec_res = self.verify_vulnerability(
@@ -883,6 +905,8 @@ class SandboxVerifier:
             sink_line=sink_line,
             issue_title=cwe_id or "Security Vulnerability",
             model_invoker=model_invoker,
+            replay=replay,
+            canary=canary,
         )
         return {
             "verification_status": exec_res.status,
@@ -899,6 +923,53 @@ class SandboxVerifier:
             "audit_record": exec_res.audit_record,
             "evidence": exec_res.evidence,
         }
+
+    def run_cases(
+        self,
+        source_code: str,
+        function_name: str,
+        cases: List[Tuple[str, Dict[str, Any]]],
+        canary: str = "sageok1",
+    ) -> Dict[str, Any]:
+        """Run the function once per (payload, kwargs) case in the sandbox and report, per case,
+        what each fake sink received, what the function returned and whether it raised.
+        Used to compare original and patched code on normal inputs."""
+        if not self.isolation_available():
+            return {"ran": False, "error": "Docker isolation runtime is unavailable", "cases": []}
+        bundle = self.build_context_bundle(source_code, function_name)
+        harness, _ = self._assemble(bundle, build_case_invocation(function_name, cases, canary))
+        _executed, _success, error = self._execute_harness(harness)
+        records = list(self.last_hook_records or [])
+        if not records and error:
+            return {"ran": False, "error": _clip(error, 300), "cases": []}
+        out: List[Dict[str, Any]] = [
+            {"n": i, "error": None, "sinks": [], "returned": None, "returned_set": False}
+            for i in range(len(cases))
+        ]
+        current: Optional[Dict[str, Any]] = None
+        for r in records:
+            if not isinstance(r, dict):
+                continue
+            kind = r.get("kind")
+            if kind == "case":
+                n = r.get("n")
+                current = out[n] if isinstance(n, int) and 0 <= n < len(out) else None
+            elif current is None:
+                continue
+            elif kind == "case_error":
+                current["error"] = _clip(r.get("error") or "error", 300)
+            elif kind == "returned" and r.get("during_call"):
+                current["returned"] = r.get("shape")
+                current["returned_set"] = True
+            elif r.get("during_call") and kind in SINK_KINDS and kind != "return":
+                current["sinks"].append({
+                    "kind": kind,
+                    "argument": _clip(sink_argument(r), 400),
+                    "bound": _clip(r.get("bound_args") or "", 200),
+                })
+        if error and not any(c["sinks"] or c["returned_set"] or c["error"] for c in out):
+            return {"ran": False, "error": _clip(error, 300), "cases": out}
+        return {"ran": True, "error": None, "cases": out}
 
 
 _GATE_NOTES = {

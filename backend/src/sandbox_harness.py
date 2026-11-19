@@ -14,7 +14,7 @@ payload's unique canary reached a sink argument intact (see ``match_sink_evidenc
 import os
 import posixpath
 import re
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 from urllib.parse import urlparse
 
 CANARY_PLACEHOLDER = "CANARY_TOKEN"
@@ -278,6 +278,20 @@ def sink_argument(rec: Dict[str, Any]) -> str:
         if key in rec:
             return str(rec[key])
     return ""
+
+
+def build_case_invocation(function_name: str, cases: List[Tuple[str, Dict[str, Any]]], canary: str) -> str:
+    """Harness lines that call the target once per (payload, kwargs) case, marking each case in the
+    hook records. Used for behaviour tests on normal inputs. Values are repr() literals: never code."""
+    literal = [(str(p), dict(k or {})) for p, k in cases]
+    return (
+        f"    for _sage_i, (_sage_p, _sage_k) in enumerate({literal!r}):\n"
+        "        _rec('case', n=_sage_i)\n"
+        "        try:\n"
+        f"            _sage_invoke({function_name!r}, _sage_p, {canary!r}, _sage_k)\n"
+        "        except BaseException as _sage_e:\n"
+        "            _rec('case_error', n=_sage_i, error=type(_sage_e).__name__ + ': ' + str(_sage_e))\n"
+    )
 
 
 def build_invocation(function_name: str, payload: str, canary: str, kwargs: Optional[Dict[str, Any]] = None) -> str:
@@ -977,7 +991,28 @@ _fake_module("django.utils.safestring", mark_safe=lambda s: s)
 
 
 # ---- Driver ------------------------------------------------------------------------------------
+def _sage_shape(value, depth=0):
+    """JSON-friendly summary of a return value, for comparing old and patched code."""
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    if isinstance(value, str):
+        return value[:300]
+    if isinstance(value, (bytes, bytearray)):
+        return bytes(value[:300]).decode("utf-8", "replace")
+    if isinstance(value, _Response):
+        return {"<response>": _sage_shape(value.body, depth + 1), "status": value.status_code}
+    if depth < 3 and isinstance(value, (list, tuple, set, frozenset)):
+        return [_sage_shape(v, depth + 1) for v in list(value)[:20]]
+    if depth < 3 and isinstance(value, dict):
+        return {str(k)[:60]: _sage_shape(v, depth + 1) for k, v in list(value.items())[:20]}
+    return "<" + type(value).__name__ + ">"
+
+
 def _sage_record_return(value):
+    try:
+        _rec("returned", shape=json.dumps(_sage_shape(value), default=str, sort_keys=True))
+    except Exception:
+        pass
     if isinstance(value, tuple) and value:
         value = value[0]
     if isinstance(value, _Response):

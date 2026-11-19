@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { ExtensionClient } from './client';
+import { ExtensionClient, Vulnerability } from './client';
 import { ScannerManager } from './scanner';
 import { DiagnosticsManager } from './diagnostics';
 import { SettingsManager } from './settings';
@@ -7,6 +7,7 @@ import { SageArmorSidebarProvider } from './sidebar';
 import { AdvancedSettingsPanel } from './settingsPanel';
 import { normalizeRemediation, createDiffHunk } from './fixUtils';
 import { VERDICT_LABEL, verdictOf } from './verdict';
+import { buildFixFinding, describeGatedFix, pickGatedFix, repoFindingsForAutofix, toFindingPatchStatus } from './verifiedFix';
 
 let diagnosticsManager: DiagnosticsManager;
 let scannerManager: ScannerManager;
@@ -394,7 +395,7 @@ export function activate(context: vscode.ExtensionContext) {
 		'sageArmor.applyUnverifiedFix',
 		async (uri: vscode.Uri, replacementRange: vscode.Range, replacement: string, title: string) => {
 			const choice = await vscode.window.showWarningMessage(
-				`${title} has not been fully verified. Apply this draft fix?`,
+				`This is a generic suggested fix for ${title}. It has not been checked by the fix gates (exploit replay, behaviour tests, rescan). Apply it anyway?`,
 				{ modal: true },
 				'Apply Fix'
 			);
@@ -402,6 +403,97 @@ export function activate(context: vscode.ExtensionContext) {
 			const edit = new vscode.WorkspaceEdit();
 			edit.replace(uri, replacementRange, replacement);
 			await vscode.workspace.applyEdit(edit);
+		}
+	);
+
+	const output = vscode.window.createOutputChannel('Sage Armor Fixes');
+
+	const generateVerifiedFixCmd = vscode.commands.registerCommand(
+		'sageArmor.generateVerifiedFix',
+		async (uri?: vscode.Uri, finding?: Vulnerability) => {
+			const document = uri
+				? await vscode.workspace.openTextDocument(uri)
+				: vscode.window.activeTextEditor?.document;
+			if (!document || !finding) {
+				vscode.window.showWarningMessage('Use this from the Sage Armor quick fix on a finding.');
+				return;
+			}
+			const startVersion = document.version;
+			const original = document.getText();
+			let job: any;
+			try {
+				job = await vscode.window.withProgress(
+					{
+						location: vscode.ProgressLocation.Notification,
+						title: `Sage Armor: fixing ${finding.title}`,
+						cancellable: true,
+					},
+					(progress, token) => client.generateVerifiedFix(
+						original,
+						document.languageId,
+						buildFixFinding(finding),
+						(message) => progress.report({ message }),
+						() => token.isCancellationRequested,
+					)
+				);
+			} catch (err: any) {
+				if (err?.message !== 'Cancelled') {
+					vscode.window.showErrorMessage(`Verified fix failed: ${err.message}`);
+				}
+				return;
+			}
+
+			const fix = pickGatedFix(job);
+			if (!fix || !fix.fixed_code || fix.fixed_code === original) {
+				vscode.window.showWarningMessage(fix ? describeGatedFix(finding.title, fix) : `No fix could be produced for ${finding.title}.`);
+				return;
+			}
+			// Emit the outcome: the finding now carries the patch status the gates gave it.
+			finding.patch_status = toFindingPatchStatus(fix.patch_status);
+			finding.validated_patch = fix.patch_status === 'verified';
+			output.appendLine(`[${new Date().toISOString()}] ${document.uri.fsPath}: ${finding.title} -> patch_status=${fix.patch_status}`);
+			for (const g of fix.verification_gates || []) {
+				output.appendLine(`  ${g.status === 'pass' ? '✓' : g.status === 'skipped' ? '–' : '✗'} ${g.label || g.gate}: ${g.detail}`);
+			}
+
+			if (document.version !== startVersion) {
+				vscode.window.showWarningMessage('The file changed while the fix was being verified; nothing was applied. Run the fix again.');
+				return;
+			}
+
+			const fixedCode = fix.fixed_code;
+			const applyGatedPatch = async () => {
+				const edit = new vscode.WorkspaceEdit();
+				const full = new vscode.Range(document.positionAt(0), document.positionAt(original.length));
+				edit.replace(document.uri, full, fixedCode);
+				await vscode.workspace.applyEdit(edit);
+				await vscode.commands.executeCommand('sageArmor.rescanActiveFile');
+			};
+			const preview = async () => {
+				const right = await vscode.workspace.openTextDocument({ language: document.languageId, content: fixedCode });
+				await vscode.commands.executeCommand('vscode.diff', document.uri, right.uri, `${finding.title}: proposed fix`);
+			};
+
+			if (fix.patch_status === 'verified') {
+				await applyGatedPatch();
+				const choice = await vscode.window.showInformationMessage(describeGatedFix(finding.title, fix), 'Show gate results');
+				if (choice) {
+					output.show(true);
+				}
+				return;
+			}
+			const choice = await vscode.window.showWarningMessage(
+				`${describeGatedFix(finding.title, fix)} Apply the unverified draft anyway?`,
+				{ modal: true },
+				'Preview diff',
+				'Apply draft'
+			);
+			if (choice === 'Apply draft') {
+				await applyGatedPatch();
+			} else if (choice === 'Preview diff') {
+				await preview();
+			}
+			output.show(true);
 		}
 	);
 
@@ -466,10 +558,11 @@ export function activate(context: vscode.ExtensionContext) {
 		}
 	});
 
-	const repoScanCmd = vscode.commands.registerCommand('sageArmor.repoScan', async () => {
+	const repoScanCmd = vscode.commands.registerCommand('sageArmor.repoScan', async (presetUrl?: string) => {
 		const repoUrl = await vscode.window.showInputBox({
 			prompt: 'Repository URL to scan',
 			placeHolder: 'https://github.com/org/repo',
+			value: typeof presetUrl === 'string' ? presetUrl : undefined,
 		});
 		if (!repoUrl) return;
 
@@ -495,6 +588,11 @@ export function activate(context: vscode.ExtensionContext) {
 						});
 						if (statusRes.status === 'completed' || statusRes.status === 'failed' || statusRes.status === 'cancelled') {
 							if (statusRes.status === 'completed') {
+								// Kept so "Start Repository Autofix" can send real findings with their file paths.
+								await context.workspaceState.update('sageArmor.lastRepoScan', {
+									repoUrl,
+									findings: repoFindingsForAutofix(statusRes),
+								});
 								vscode.window.showInformationMessage(`Repo scan complete: ${statusRes.summary || 'Done'}`);
 							} else {
 								vscode.window.showWarningMessage(`Repo scan ended with status: ${statusRes.status}`);
@@ -510,16 +608,72 @@ export function activate(context: vscode.ExtensionContext) {
 	});
 
 	const repoAutofixCmd = vscode.commands.registerCommand('sageArmor.repoAutofix', async () => {
+		const last = context.workspaceState.get<{ repoUrl: string; findings: Record<string, unknown>[] }>('sageArmor.lastRepoScan');
 		const repoUrl = await vscode.window.showInputBox({
-			prompt: 'Repository URL for autofix',
+			prompt: 'Repository URL for autofix (uses the findings of your last repository scan)',
 			placeHolder: 'https://github.com/org/repo',
+			value: last?.repoUrl,
 		});
 		if (!repoUrl) return;
 
+		const findings = last && last.repoUrl === repoUrl ? last.findings : [];
+		if (!findings.length) {
+			const choice = await vscode.window.showWarningMessage(
+				'Autofix needs findings with file paths. Run a repository scan of this URL first.',
+				'Scan repository'
+			);
+			if (choice) {
+				await vscode.commands.executeCommand('sageArmor.repoScan', repoUrl);
+			}
+			return;
+		}
+
+		const modePick = await vscode.window.showQuickPick(
+			[
+				{ label: 'Suggest fixes', description: 'Generate and verify patches; change nothing', mode: 'suggest' },
+				{ label: 'Open a pull request', description: 'Commit only patches that pass every gate', mode: 'pr' },
+			],
+			{ placeHolder: `${findings.length} finding(s) from the last scan of ${repoUrl}` }
+		);
+		if (!modePick) return;
+
 		try {
-			const startRes = await client.startAutofix(repoUrl, [{ issue: 'Scan all vulnerabilities' }]);
+			const startRes = await client.startAutofix(repoUrl, findings, modePick.mode);
 			const jobId = startRes.job_id;
-			vscode.window.showInformationMessage(`Autofix started with Job ID: ${jobId}`);
+			const job = await vscode.window.withProgress(
+				{ location: vscode.ProgressLocation.Notification, title: `Sage Armor autofix: ${repoUrl}`, cancellable: false },
+				async (progress) => {
+					const deadline = Date.now() + 30 * 60 * 1000;
+					while (Date.now() < deadline) {
+						await new Promise((r) => setTimeout(r, 3000));
+						const status = await client.getAutofixStatus(jobId);
+						const logs: string[] = Array.isArray(status?.logs) ? status.logs : [];
+						progress.report({ message: logs[logs.length - 1] || `${status?.stage || status?.status} (${status?.progress || 0}%)` });
+						if (status?.status === 'completed' || status?.status === 'failed' || status?.status === 'interrupted') {
+							return status;
+						}
+					}
+					throw new Error('Timed out waiting for the autofix job');
+				}
+			);
+			if (job?.status !== 'completed') {
+				vscode.window.showErrorMessage(`Autofix ${job?.status}: ${job?.error || ''}`);
+				return;
+			}
+			output.appendLine(`[${new Date().toISOString()}] Autofix ${repoUrl}: ${job.summary || ''}`);
+			for (const r of job.results || []) {
+				output.appendLine(`  ${r.patch_status === 'verified' ? '🛡️' : '⚠️'} ${r.file_path} ${r.issue}: patch_status=${r.patch_status}${r.applied ? ' (applied)' : ''}`);
+				for (const g of r.verification_gates || []) {
+					output.appendLine(`      ${g.status === 'pass' ? '✓' : g.status === 'skipped' ? '–' : '✗'} ${g.label || g.gate}: ${g.detail}`);
+				}
+			}
+			const buttons = job.pr_url ? ['Open pull request', 'Show details'] : ['Show details'];
+			const choice = await vscode.window.showInformationMessage(`Autofix complete: ${job.summary || 'done'}`, ...buttons);
+			if (choice === 'Open pull request' && job.pr_url) {
+				vscode.env.openExternal(vscode.Uri.parse(job.pr_url));
+			} else if (choice) {
+				output.show(true);
+			}
 		} catch (err: any) {
 			vscode.window.showErrorMessage(`Autofix failed: ${err.message}`);
 		}
@@ -581,6 +735,8 @@ export function activate(context: vscode.ExtensionContext) {
 	context.subscriptions.push(openIssueCmd);
 	context.subscriptions.push(previewFixCmd);
 	context.subscriptions.push(applyUnverifiedFixCmd);
+	context.subscriptions.push(generateVerifiedFixCmd);
+	context.subscriptions.push(output);
 	context.subscriptions.push(attackPathCmd);
 	context.subscriptions.push(riskScoreCmd);
 	context.subscriptions.push(copilotChatCmd);
@@ -654,13 +810,26 @@ class SageArmorCodeActionProvider implements vscode.CodeActionProvider {
 				document.lineAt(endLine).text.length
 			);
 
-			const verdict = this.diagManager.getDetails(key)?.verification?.verdict
-				?? this.diagManager.getDetails(key)?.verification_status;
-			const requiresConfirmation = verdict !== 'verified';
+			const details = this.diagManager.getDetails(key);
 
-			// Verified fixes can be applied directly; all other fixes require confirmation.
+			// The backend's gated fix loop: exploit replay, behaviour tests, rescan (Python only).
+			if (document.languageId === 'python' && details) {
+				const gated = new vscode.CodeAction(`🛡️ Generate verified fix: ${title}`, vscode.CodeActionKind.QuickFix);
+				gated.command = {
+					command: 'sageArmor.generateVerifiedFix',
+					title: 'Generate verified fix',
+					arguments: [document.uri, details],
+				};
+				gated.diagnostics = [diagnostic];
+				gated.isPreferred = true;
+				actions.push(gated);
+			}
+
+			// "Verified" describes the patch, not the finding: only a patch that passed the fix
+			// gates may be applied without confirmation. Template suggestions never have.
+			const requiresConfirmation = details?.patch_status !== 'validated_patch';
 			const action = new vscode.CodeAction(
-				requiresConfirmation ? `🔧 Review unverified fix: ${title}` : `🔧 Apply verified fix: ${title}`,
+				requiresConfirmation ? `🔧 Review suggested fix (not verified): ${title}` : `🔧 Apply verified fix: ${title}`,
 				vscode.CodeActionKind.QuickFix
 			);
 		if (requiresConfirmation) {
@@ -679,7 +848,7 @@ class SageArmorCodeActionProvider implements vscode.CodeActionProvider {
 		}
 
 			action.diagnostics = [diagnostic];
-			action.isPreferred = true;
+			action.isPreferred = !requiresConfirmation;
 			actions.push(action);
 
 			// Add preview action

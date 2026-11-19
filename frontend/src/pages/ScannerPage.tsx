@@ -15,6 +15,7 @@ import {
 import { PageTransition } from '../components/shared/PageTransition';
 import { ChatMarkdown } from '../components/shared/ChatMarkdown';
 import { SandboxEvidence } from '../components/shared/SandboxEvidence';
+import { FixGates, PatchBadge, type FixGate } from '../components/shared/FixGates';
 import { attackNodeTypes, roleFromCriticality, ROLE_STYLE, type AttackFlowNode } from '../components/shared/AttackGraphNode';
 import { auth } from '../services/auth';
 
@@ -85,14 +86,22 @@ type SandboxEvidence = {
 type AttackNode = { id: string; label: string; kind: string; criticality: string };
 type AttackEdge = { id: string; source: string; target: string; label?: string };
 type AttackPath = Record<string, unknown>;
-type VerificationGate = { passed: boolean; gate: string; detail: string };
 type AutoFixResult = {
   diff?: string;
   confidence?: string;
   patch_status?: string;
   fixed_code?: string;
   explanation?: string;
-  verification_gates?: VerificationGate[];
+  verification_gates?: FixGate[];
+  // per-finding fields (repository autofix, and each entry of a snippet's `fixes`)
+  issue?: string;
+  file_path?: string;
+  function_name?: string;
+  applied?: boolean;
+  attempts?: number;
+  project_helpers_used?: string[];
+  formatter?: string | null;
+  fixes?: AutoFixResult[];
 };
 type RiskItem = {
   id: string; issue: string; severity: string; priority_score: number;
@@ -256,11 +265,12 @@ export default function ScannerPage() {
   const pollJobStatus = async (jobId: string) => {
     let polling = true;
     let retries = 0;
-    const maxRetries = 40;
+    // Each fix runs exploit replays, behaviour tests, project tests and a rescan in the sandbox.
+    const maxRetries = 150;
     while (polling) {
       retries++;
       if (retries > maxRetries) {
-        setApiError('Polling timed out after 40 attempts. You can retry the job.');
+        setApiError('Stopped waiting for the AutoFix job. It may still be running; you can retry.');
         setIsAutoFixing(false);
         break;
       }
@@ -817,36 +827,50 @@ export default function ScannerPage() {
                            </a>
                          )}
 
+                         {repoUrl && autoFixResults.fixes?.map((fix, idx) => (
+                            <div key={`repo-${idx}`} className="mt-4 p-4 bg-black/40 border border-white/5 rounded-xl">
+                               <div className="flex flex-wrap items-center gap-2 mb-2">
+                                  <span className="text-xs font-bold text-white/80">{fix.issue || 'Fix'}</span>
+                                  <span className="text-[11px] font-mono text-white/50">{fix.file_path}{fix.function_name ? ` · ${fix.function_name}()` : ''}</span>
+                                  <PatchBadge status={fix.patch_status} />
+                                  {fix.applied === false && fix.patch_status !== 'failed' && (
+                                    <span className="text-[10px] text-white/40">not written to the repository</span>
+                                  )}
+                               </div>
+                               <p className="text-xs text-white/60 mb-2 leading-relaxed">{fix.explanation}</p>
+                               {fix.project_helpers_used && fix.project_helpers_used.length > 0 && (
+                                 <p className="text-[11px] text-white/40 mb-2">Project helpers offered to the model: {fix.project_helpers_used.join(', ')}</p>
+                               )}
+                               <FixGates gates={fix.verification_gates} />
+                               {fix.diff && (
+                                 <pre className="text-[11px] font-mono p-3 bg-[#0A0F1C] rounded-lg overflow-x-auto border border-white/5">
+                                   {fix.diff.split('\n').filter(l => !l.startsWith('---') && !l.startsWith('+++')).map((line, lIdx) => (
+                                     <div key={lIdx} className={line.startsWith('+') ? 'text-green-300' : line.startsWith('-') ? 'text-red-300' : line.startsWith('@@') ? 'text-cyan-500/50' : 'text-white/60'}>{line}</div>
+                                   ))}
+                                 </pre>
+                               )}
+                            </div>
+                         ))}
+
                          {!repoUrl && autoFixResults.fixes?.filter(f => f.diff).map((snippetFix, idx) => (
                             <div key={idx} className="mt-4 p-4 bg-black/40 border border-white/5 rounded-xl">
                                <div className="flex justify-between items-center mb-3">
                                   <div className="flex items-center gap-2">
                                      <Sparkles className="w-4 h-4 text-green-300" />
                                      <span className="text-xs uppercase font-bold text-white/80">Refactored Snippet</span>
-                                     <span className="text-[10px] px-2 py-0.5 rounded-full bg-green-500/20 border border-green-500/30 text-green-300 font-mono tracking-wide">CONFIDENCE: {snippetFix.confidence?.toUpperCase() || 'HIGH'}</span>
-                                     {snippetFix.patch_status === 'verified' ? (
-                                       <span className="text-[10px] px-2 py-0.5 rounded-full bg-green-500/20 border border-green-500/30 text-green-300 font-mono tracking-wide">🛡️ Verified Patch</span>
-                                     ) : (
-                                       <span className="text-[10px] px-2 py-0.5 rounded-full bg-amber-500/20 border border-amber-500/30 text-amber-300 font-mono tracking-wide">⚠️ Unverified Draft</span>
-                                     )}
+                                     <PatchBadge status={snippetFix.patch_status} />
                                   </div>
                                   <button onClick={() => { navigator.clipboard.writeText(snippetFix.fixed_code ?? ''); setCopiedIdx(-1); setTimeout(() => setCopiedIdx(null), 2000) }} className="text-[10px] font-bold px-3 py-1.5 bg-green-500/10 text-green-400 hover:bg-green-500/20 border border-green-500/20 rounded-lg transition-all">
                                      {copiedIdx === -1 ? 'Copied to Clipboard!' : 'Copy Fixed Code'}
                                   </button>
                                </div>
                                <p className="text-xs text-white/60 mb-3 leading-relaxed whitespace-pre-wrap">{snippetFix.explanation}</p>
-                               {snippetFix.verification_gates && (
-                                 <details className="mb-3">
-                                   <summary className="text-[10px] text-cyan-400/80 cursor-pointer uppercase font-mono tracking-wider">🔬 Verification Gate Details</summary>
-                                   <div className="mt-2 p-3 bg-black/60 rounded-lg border border-white/5 space-y-1 font-mono text-[11px]">
-                                     {snippetFix.verification_gates.map((g, gi) => (
-                                       <div key={gi} className={g.passed ? 'text-green-400' : 'text-red-400'}>
-                                         {g.passed ? '✅' : '❌'} {g.gate}: {g.detail}
-                                       </div>
-                                     ))}
-                                   </div>
-                                 </details>
+                               {snippetFix.patch_status !== 'verified' && snippetFix.patch_status !== 'failed' && (
+                                 <p className="text-[11px] text-amber-300/80 mb-3">
+                                   This patch did not pass every gate. Review it before using it.
+                                 </p>
                                )}
+                               <FixGates gates={snippetFix.verification_gates} />
                                <div className="rounded-lg overflow-hidden border border-white/5">
                                  <pre className="text-[11px] font-mono p-4 bg-[#0A0F1C] overflow-x-auto">
                                     {(snippetFix.diff ?? '').split('\n').map((line, lIdx) => {

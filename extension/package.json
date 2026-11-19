@@ -94,6 +94,10 @@
       {
         "command": "sageArmor.repoAutofix",
         "title": "Sage Armor: Start Repository Autofix"
+      },
+      {
+        "command": "sageArmor.generateVerifiedFix",
+        "title": "Sage Armor: Generate Verified Fix"
       }
     ],
     "menus": {

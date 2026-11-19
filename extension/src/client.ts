@@ -29,6 +29,9 @@ export interface Vulnerability {
 		[key: string]: unknown;
 	};
 	unconfirmed_note?: string;
+	cwe_id?: string;
+	function_name?: string;
+	file_path?: string;
 	/** What the sandbox attack sent and what the dangerous call received. */
 	evidence?: {
 		payload?: string;
@@ -66,6 +69,11 @@ type RawVulnerability = Partial<Vulnerability> & {
 	dynamic_trace?: Vulnerability['dynamic_trace'];
 	unconfirmed_note?: string;
 	evidence?: Vulnerability['evidence'];
+	cwe?: string;
+	cwe_id?: string;
+	function_name?: string;
+	file_path?: string;
+	line_number?: number;
 };
 
 export function normalizeReviewResponse(data: any, fallbackLanguage: string): ReviewResponse {
@@ -162,6 +170,9 @@ export function normalizeReviewResponse(data: any, fallbackLanguage: string): Re
 			dynamic_trace: v.dynamic_trace,
 			unconfirmed_note: v.unconfirmed_note,
 			evidence: v.evidence,
+			cwe_id: v.cwe_id ?? v.cwe,
+			function_name: v.function_name,
+			file_path: v.file_path,
 		};
 	});
 
@@ -375,6 +386,55 @@ export class ExtensionClient {
 		} catch (error: any) {
 			throw new Error(mapBackendError(error, this.settingsManager.backendUrl));
 		}
+	}
+
+	/**
+	 * Ask the backend's verified fix loop to patch one finding in `code` and wait for the result.
+	 * `onProgress` receives the job's latest log line.
+	 */
+	async generateVerifiedFix(
+		code: string,
+		language: string,
+		finding: Record<string, unknown>,
+		onProgress?: (message: string) => void,
+		isCancelled?: () => boolean,
+	): Promise<any> {
+		this.client.defaults.baseURL = this.settingsManager.backendUrl;
+		let jobId: string;
+		try {
+			const res = await this.client.post('/repo-autofix/start', {
+				code,
+				language,
+				vulnerabilities: [finding],
+				mode: 'suggest',
+			});
+			jobId = res.data?.job_id;
+		} catch (error: any) {
+			throw new Error(mapBackendError(error, this.settingsManager.backendUrl));
+		}
+		if (!jobId) {
+			throw new Error('Backend did not start a fix job');
+		}
+		const deadline = Date.now() + 10 * 60 * 1000;
+		while (Date.now() < deadline) {
+			if (isCancelled?.()) {
+				throw new Error('Cancelled');
+			}
+			await new Promise((r) => setTimeout(r, 2000));
+			const job = await this.getAutofixStatus(jobId);
+			const last = Array.isArray(job?.logs) ? job.logs[job.logs.length - 1] : undefined;
+			const text = typeof last === 'string' ? last : last?.message;
+			if (text) {
+				onProgress?.(String(text));
+			}
+			if (job?.status === 'completed') {
+				return job;
+			}
+			if (job?.status === 'failed' || job?.status === 'interrupted') {
+				throw new Error(job?.error || text || 'The fix job failed');
+			}
+		}
+		throw new Error('Timed out waiting for the verified fix');
 	}
 
 	async getAutofixStatus(jobId: string): Promise<any> {

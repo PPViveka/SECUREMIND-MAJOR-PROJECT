@@ -13,6 +13,11 @@ const {
   normalizeRemediation,
   createDiffHunk,
   applyPatchPreservingContext,
+  buildFixFinding,
+  repoFindingsForAutofix,
+  pickGatedFix,
+  toFindingPatchStatus,
+  describeGatedFix,
 } = require('../out/testable.js');
 
 describe('SageArmor Extension Unit Tests', () => {
@@ -114,6 +119,51 @@ describe('SageArmor Extension Unit Tests', () => {
       assert.equal(result.vulnerabilities[1].patch_status, 'unverified_draft');
       assert.equal(result.vulnerabilities[1].validated_patch, false);
       assert.equal(result.vulnerabilities[2].patch_status, 'none');
+    });
+  });
+
+  describe('Verified Fixes', () => {
+    test('sends the finding with a 1-based line, CWE, function and sandbox evidence', () => {
+      const [v] = normalizeReviewResponse({
+        vulnerabilities: [{ issue: 'SQL Injection', line: 12, cwe_id: 'CWE-89', function_name: 'lookup',
+          evidence: { payload: "x' OR 1=1", sink: { kind: 'sql', argument: '...' } } }],
+      }, 'python').vulnerabilities;
+      const f = buildFixFinding(v);
+      assert.equal(f.issue, 'SQL Injection');
+      assert.equal(f.line_number, 12);
+      assert.equal(f.cwe_id, 'CWE-89');
+      assert.equal(f.function_name, 'lookup');
+      assert.equal(f.evidence.sink.kind, 'sql');
+    });
+
+    test('repo autofix only sends real findings that name their file', () => {
+      const findings = repoFindingsForAutofix({
+        vulnerabilities_full: [
+          { issue: 'Command Injection', file_path: 'app/run.py', line: 9 },
+          { issue: 'No file' },
+        ],
+      });
+      assert.equal(findings.length, 1);
+      assert.equal(findings[0].file_path, 'app/run.py');
+      assert.equal(findings[0].line_number, 9);
+      assert.notEqual(findings[0].issue, 'Scan all vulnerabilities');
+    });
+
+    test('says "verified fix" only when every gate passed', () => {
+      const verified = pickGatedFix({ results: [{ fixed_code: 'x', patch_status: 'verified', verification_gates: [] }] });
+      assert.equal(verified.patch_status, 'verified');
+      assert.match(describeGatedFix('SQLi', verified), /^Verified fix/);
+      assert.equal(toFindingPatchStatus('verified'), 'validated_patch');
+
+      const draft = pickGatedFix({ results: [{ fixed_code: 'x', patch_status: 'unverified_draft', verification_gates: [
+        { gate: 'gate_a_parse_compile', label: 'Parses and compiles', status: 'pass', detail: 'ok' },
+        { gate: 'exploit_blocked', label: 'Exploit blocked', status: 'fail', detail: 'Gate B FAIL: still reached the sql call' },
+      ] }] });
+      const msg = describeGatedFix('SQLi', draft);
+      assert.doesNotMatch(msg, /^Verified/);
+      assert.match(msg, /Exploit blocked: still reached the sql call/);
+      assert.equal(toFindingPatchStatus('unverified_draft'), 'unverified_draft');
+      assert.equal(pickGatedFix({ results: [] }), null);
     });
   });
 

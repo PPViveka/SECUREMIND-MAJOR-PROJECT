@@ -1671,11 +1671,17 @@ def repo_autofix_start(event, context):
         branch = body.get('branch')
         language = body.get('language', 'python')
 
-        if not vulnerabilities:
+        include_drafts = body.get('include_drafts')
+
+        if not vulnerabilities or not isinstance(vulnerabilities, list):
             return _json_response(400, {"error": "vulnerabilities list is required"})
+        vulnerabilities = [v for v in vulnerabilities if isinstance(v, dict)][:50]
+        if repo_url and not any(v.get('file_path') or v.get('path') for v in vulnerabilities):
+            return _json_response(400, {"error": "Repository autofix needs findings with a file_path; run a repository scan first"})
 
         from .job_manager import create_job
         from .autofix_engine import start_autofix_job
+        from .sandbox_verifier import default_exploit_invoker
 
         job_id = create_job()
 
@@ -1683,7 +1689,16 @@ def repo_autofix_start(event, context):
             prompt = build_autofix_prompt(file_content, file_vulns, file_path)
             return _invoke_model_json(prompt, max_tokens=3000)
 
-        start_autofix_job(job_id, repo_url, code, vulnerabilities, token, branch, mode, language, autofix_llm_callback)
+        def fix_llm(prompt):
+            # Verified fix loop: the prompt carries the sandbox proof, project helpers and gate feedback.
+            return _invoke_model_text(prompt, max_tokens=2000)
+
+        start_autofix_job(
+            job_id, repo_url, code, vulnerabilities, token, branch, mode, language, autofix_llm_callback,
+            fix_llm_fn=fix_llm,
+            model_invoker=default_exploit_invoker(),
+            include_drafts=bool(include_drafts) if include_drafts is not None else None,
+        )
 
         return _json_response(200, {"job_id": job_id, "status": "started"})
         

@@ -11,3 +11,11 @@ export {
 	createDiffHunk,
 	applyPatchPreservingContext,
 } from './fixUtils';
+export {
+	buildFixFinding,
+	repoFindingsForAutofix,
+	pickGatedFix,
+	toFindingPatchStatus,
+	describeGatedFix,
+	failedGateSummary,
+} from './verifiedFix';
