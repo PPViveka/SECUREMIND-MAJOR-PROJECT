@@ -6,6 +6,7 @@ import { SettingsManager } from './settings';
 import { SageArmorSidebarProvider } from './sidebar';
 import { AdvancedSettingsPanel } from './settingsPanel';
 import { normalizeRemediation, createDiffHunk } from './fixUtils';
+import { VERDICT_LABEL, verdictOf } from './verdict';
 
 let diagnosticsManager: DiagnosticsManager;
 let scannerManager: ScannerManager;
@@ -285,14 +286,7 @@ export function activate(context: vscode.ExtensionContext) {
 						return null;
 					}
 
-					const verdict = details?.verification?.verdict ?? details?.verification_status;
-					const verdictBadge = verdict === 'verified' || details?.verified
-						? 'Confirmed'
-						: verdict === 'refuted'
-						? 'Refuted'
-						: verdict === 'pending'
-						? 'Pending'
-						: 'Unverified';
+					const verdictBadge = details ? (VERDICT_LABEL[verdictOf(details)] ?? 'Pending') : 'Pending';
 
 					const isValidatedPatch = details?.patch_status === 'validated_patch' || details?.validated_patch === true;
 					const patchBadge = isValidatedPatch ? 'Validated Patch' : 'Unvalidated Patch';
@@ -307,8 +301,16 @@ export function activate(context: vscode.ExtensionContext) {
 					const description = details?.description || diagnostic.message;
 					markdown.appendMarkdown(`${description}\n\n`);
 
-					if (details?.verified && details?.dynamic_trace?.sink_reached) {
-						markdown.appendMarkdown(`> **Exploit Trace:** Sink reached in sandbox${details.dynamic_trace.sink_line ? ` at line ${details.dynamic_trace.sink_line}` : ''}\n\n`);
+					const evidence = details?.evidence;
+					if (details?.verified && evidence?.sink) {
+						// Fenced so attacker-controlled text renders literally.
+						const fence = (text: string) => '```\n' + text.replace(/```/g, '` ``') + '\n```\n\n';
+						markdown.appendMarkdown(`## 🧪 Sandbox proof\n\nAttack input${evidence.payload_source === 'llm' ? ' (AI-written from the trace)' : ''}:\n\n`);
+						markdown.appendMarkdown(fence(evidence.payload ?? ''));
+						markdown.appendMarkdown(`The dangerous call received (${evidence.sink.kind}):\n\n`);
+						markdown.appendMarkdown(fence(evidence.sink.argument));
+					} else if (details?.unconfirmed_note) {
+						markdown.appendMarkdown(`> ${details.unconfirmed_note}\n\n`);
 					}
 
 					markdown.appendMarkdown(`---\n\n`);

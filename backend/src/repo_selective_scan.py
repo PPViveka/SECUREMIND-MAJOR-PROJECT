@@ -413,7 +413,9 @@ def selective_repo_scan(repo_url, query, token=None, branch=None, top_k=3):
                     return {
                         "path": file["path"],
                         "hit_count": hit_count + security_bonus,
-                        "excerpt": content
+                        "excerpt": content,
+                        # Whole Python files let the sandbox gate run the function a finding is in.
+                        "content": res.text if file["path"].endswith(".py") and len(res.text) <= 300_000 else None,
                     }
         except:
             pass

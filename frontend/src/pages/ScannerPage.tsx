@@ -14,6 +14,7 @@ import {
 } from 'lucide-react';
 import { PageTransition } from '../components/shared/PageTransition';
 import { ChatMarkdown } from '../components/shared/ChatMarkdown';
+import { SandboxEvidence } from '../components/shared/SandboxEvidence';
 import { attackNodeTypes, roleFromCriticality, ROLE_STYLE, type AttackFlowNode } from '../components/shared/AttackGraphNode';
 import { auth } from '../services/auth';
 
@@ -50,8 +51,36 @@ type Vulnerability = {
     executed_lines?: (string | number)[];
     vector_used?: string;
     harness_output?: string;
+    sink_line_reached?: boolean;
+    attempts_used?: number;
   };
   function_name?: string;
+  unconfirmed_note?: string;
+  evidence?: SandboxEvidence;
+};
+type SandboxAttempt = {
+  n: number;
+  source: 'fixed' | 'llm';
+  payload: string;
+  kwargs?: Record<string, unknown>;
+  status: 'proved' | 'failed';
+  stopped_at?: { line: number; code: string } | null;
+  error?: string | null;
+  reasoning?: string;
+};
+type SandboxEvidence = {
+  category?: string;
+  canary?: string;
+  payload?: string;
+  kwargs?: Record<string, unknown>;
+  payload_source?: 'fixed' | 'llm' | null;
+  sink?: { kind: string; argument: string } | null;
+  sink_line?: number;
+  sink_line_reached?: boolean;
+  executed_lines?: number[];
+  llm_used?: boolean;
+  attempts?: SandboxAttempt[];
+  reason?: string;
 };
 type AttackNode = { id: string; label: string; kind: string; criticality: string };
 type AttackEdge = { id: string; source: string; target: string; label?: string };
@@ -78,6 +107,43 @@ type SimulationData = {
 type ChatMessage = { role: 'user' | 'assistant'; text: string; note?: string };
 type AttackGraph = { nodes: AttackNode[]; edges: AttackEdge[]; attack_paths?: AttackPath[]; ast_derived?: boolean };
 type RepoStats = Record<string, unknown>;
+
+/* ── Sandbox verdicts: what the exploit gate concluded for a finding ── */
+type Verdict = 'verified' | 'inconclusive' | 'pending' | 'not_run' | 'not_applicable' | 'unconfirmed' | 'refuted';
+
+const verdictOf = (v: Vulnerability): Verdict => {
+  if (v.verified) return 'verified';
+  const status = v.verification_status || v.verification?.verdict || 'pending';
+  if (status === 'unverified') return 'pending';
+  return (['verified', 'inconclusive', 'pending', 'not_run', 'not_applicable', 'unconfirmed', 'refuted'].includes(status)
+    ? status : 'pending') as Verdict;
+};
+
+// Lower ranks first: proven exploits on top, findings the sandbox attacked without success at the bottom.
+const VERDICT_RANK: Record<Verdict, number> = {
+  verified: 0, inconclusive: 1, pending: 2, not_run: 2, not_applicable: 2, unconfirmed: 3, refuted: 4,
+};
+
+const VERDICT_BADGE: Record<Verdict, { label: string; className: string; title: string }> = {
+  verified: { label: '🛡️ Exploit verified', className: 'bg-green-500/20 border-green-500/30 text-green-300', title: 'The sandbox attack reached the dangerous call with the payload intact.' },
+  inconclusive: { label: '❔ Inconclusive', className: 'bg-violet-500/20 border-violet-500/30 text-violet-300', title: 'Unknown (stubbed) code ran during the attack, so the result cannot be trusted either way.' },
+  pending: { label: '⏳ Pending', className: 'bg-blue-500/20 border-blue-500/30 text-blue-300', title: 'Not checked by the sandbox yet.' },
+  not_run: { label: '⛔ Sandbox not run', className: 'bg-slate-500/20 border-slate-400/30 text-slate-200', title: 'Docker is unavailable, so this finding has not been tested.' },
+  not_applicable: { label: '— No runtime check', className: 'bg-white/5 border-white/15 text-white/60', title: 'There is no exploit test for this language or finding type (for example secrets or weak crypto).' },
+  unconfirmed: { label: '⚠️ Unconfirmed', className: 'bg-amber-500/20 border-amber-500/30 text-amber-300', title: 'The sandbox attacked this code and no input reached the dangerous call.' },
+  refuted: { label: '❌ Refuted', className: 'bg-slate-500/20 border-slate-500/30 text-slate-300', title: 'Shown not to be exploitable.' },
+};
+
+const SEVERITY_RANK: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3, info: 4 };
+
+const rankFindings = (items: Vulnerability[]) =>
+  items
+    .map((v, index) => ({ v, index }))
+    .sort((a, b) =>
+      VERDICT_RANK[verdictOf(a.v)] - VERDICT_RANK[verdictOf(b.v)]
+      || (SEVERITY_RANK[(a.v.severity || '').toLowerCase()] ?? 5) - (SEVERITY_RANK[(b.v.severity || '').toLowerCase()] ?? 5)
+      || a.index - b.index)
+    .map(item => item.v);
 
 const getSeverityLevel = (sev?: string) => {
   const s = (sev || '').toLowerCase();
@@ -801,8 +867,9 @@ export default function ScannerPage() {
                        </div>
                      )}
 
-                     {scanResults?.vulnerabilities?.map((v, i) => {
+                     {rankFindings(scanResults?.vulnerabilities || []).map((v, i) => {
                        const { card, badge, iconColor, IconComp, accent } = sevStyle(getSeverityLevel(v.severity));
+                       const verdict = verdictOf(v);
                        return (
                          <div key={i} className={`rounded-2xl border p-6 ${card} backdrop-blur-md`}>
                            <div className="flex gap-5">
@@ -822,15 +889,7 @@ export default function ScannerPage() {
                                  </div>
                                  <div className="flex items-center gap-2">
                                    <span className="text-[10px] uppercase font-mono text-white/30 mr-2">{v.file_path || ''}</span>
-                                   {v.verified || (v as any).verification_status === 'verified' || (v as any).verification?.verdict === 'verified' ? (
-                                     <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-green-500/20 border border-green-500/30 text-green-300">🛡️ Verified</span>
-                                   ) : (v as any).verification_status === 'refuted' || (v as any).verification?.verdict === 'refuted' ? (
-                                     <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-500/20 border border-slate-500/30 text-slate-300">❌ Refuted</span>
-                                   ) : (v as any).verification_status === 'pending' || (v as any).verification?.verdict === 'pending' ? (
-                                     <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-blue-500/20 border border-blue-500/30 text-blue-300">⏳ Pending</span>
-                                   ) : (
-                                     <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-500/20 border border-amber-500/30 text-amber-300">⚠️ Unconfirmed</span>
-                                   )}
+                                   <span title={v.unconfirmed_note || VERDICT_BADGE[verdict].title} className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${VERDICT_BADGE[verdict].className}`}>{VERDICT_BADGE[verdict].label}</span>
                                    {((v as any).patch_status === 'validated_patch' || (v as any).validated_patch) && (
                                      <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-cyan-500/20 border border-cyan-500/30 text-cyan-300">🛡️ Validated Patch</span>
                                    )}
@@ -839,6 +898,8 @@ export default function ScannerPage() {
                                </div>
                                
                                <p className="text-sm text-white/70 leading-relaxed mb-6">{v.explanation}</p>
+
+                               <SandboxEvidence evidence={v.evidence} verdict={verdict} />
                                
                                <div className="mb-6 p-4 bg-red-950/20 border border-red-900/30 rounded-xl">
                                   <div className="flex items-center gap-2 mb-3">

@@ -43,7 +43,7 @@ def compute_rule_set_hash() -> str:
 
 
 # Bump when sandbox verdict logic changes, so cached verification results are recomputed.
-SANDBOX_VERIFIER_VERSION = "verifier-2"
+SANDBOX_VERIFIER_VERSION = "verifier-3"  # canary exploit gate with LLM retries
 CACHE_RULE_VERSION = f"{compute_rule_set_hash()}+{SANDBOX_VERIFIER_VERSION}"
 CACHE_PROMPT_VERSION = "prompt-v1"
 

@@ -8,6 +8,8 @@ from .job_manager import get_job, update_job_progress, _save_jobs, _load_jobs
 from .repo_selective_scan import selective_repo_scan
 from .prompt_builder import build_fast_scan_prompt, build_deep_enrichment_prompt
 from .attack_intelligence import build_attack_intelligence
+from .finding_schema import rank_findings
+from .sandbox_verifier import verify_finding_in_source
 
 class RateLimitedEngine:
     def __init__(self, job_id, token, invoke_fn, branch=None, top_k=3):
@@ -48,6 +50,27 @@ class RateLimitedEngine:
                     time.sleep(delay)
                     return self._invoke_with_backoff(prompt, max_tokens, retries + 1)
             raise e
+
+    def _verify_python_finding(self, finding, py_sources, batch_paths):
+        """Run the sandbox exploit gate on a finding in a Python file we have in full."""
+        path = str(finding.get("file_path") or "")
+        source = py_sources.get(path)
+        if source is None and path:
+            match = next((p for p in py_sources if p.endswith(path) or path.endswith(p)), None)
+            if match:
+                path, source = match, py_sources[match]
+        if source is None:
+            in_batch = [p for p in batch_paths if p in py_sources]
+            if len(in_batch) == 1:
+                path, source = in_batch[0], py_sources[in_batch[0]]
+        if source is None:
+            return finding
+        self._log(f"Sandbox: attacking '{finding.get('issue')}' in {path}...")
+        try:
+            return verify_finding_in_source(dict(finding, file_path=path), source)
+        except Exception as exc:
+            self._log(f"Sandbox verification failed for {path}: {exc}")
+            return finding
 
     def run_scan(self, repo_url, query):
         job = get_job(self.job_id)
@@ -96,6 +119,7 @@ class RateLimitedEngine:
                 return 3
 
             selected_files = sorted(selected_files, key=priority_score)
+            py_sources = {item["path"]: item["content"] for item in selected_files if item.get("content")}
 
             batch_size = 3
             batches = [selected_files[i:i + batch_size] for i in range(0, len(selected_files), batch_size)]
@@ -148,6 +172,7 @@ class RateLimitedEngine:
                         
                         # Attach context for Stage 2
                         v["_context"] = combined_context
+                        v["_batch_paths"] = [item.get("path", "") for item in batch]
                         all_raw_vulns.append(v)
                 except Exception as e:
                     self._log(f"Batch {index+1} failed ({str(e)}). Skipping...")
@@ -196,6 +221,7 @@ class RateLimitedEngine:
                         'matched_code': matched_code,
                         'file_path': v.get('file_path') or v.get('path')
                     }
+                    refined_v = self._verify_python_finding(refined_v, py_sources, v.get("_batch_paths", []))
                     
                     # Persist enriched vuln
                     current_job = get_job(self.job_id)
@@ -232,6 +258,9 @@ class RateLimitedEngine:
             self._sync_job(stage="analyzing", progress=90)
             current_job = get_job(self.job_id)
             if current_job:
+                # Sandbox-confirmed findings first; unconfirmed ones stay, ranked last.
+                self._sync_job(vulnerabilities_full=rank_findings(current_job.get("vulnerabilities_full", [])))
+                current_job = get_job(self.job_id) or current_job
                 intelligence = build_attack_intelligence(current_job.get("vulnerabilities_full", []), "Aggregated insights")
                 self._sync_job(
                     risk_ranking=intelligence.get('risk_ranking', []),

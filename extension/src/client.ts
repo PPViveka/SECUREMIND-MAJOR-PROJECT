@@ -1,5 +1,6 @@
 import axios, { AxiosInstance } from 'axios';
 import { SettingsManager } from './settings';
+import { rankVulnerabilities } from './verdict';
 
 export interface Vulnerability {
 	finding_id?: string;
@@ -16,7 +17,7 @@ export interface Vulnerability {
 	remediation: string;
 	remediation_description: string;
 	verified?: boolean;
-	verification_status?: 'verified' | 'refuted' | 'inconclusive' | 'not_applicable' | 'pending' | 'unconfirmed';
+	verification_status?: 'verified' | 'refuted' | 'inconclusive' | 'not_applicable' | 'not_run' | 'pending' | 'unconfirmed';
 	verification?: { verdict?: Vulnerability['verification_status']; reason?: string };
 	patch_status?: 'validated_patch' | 'unverified_draft' | 'none';
 	validated_patch?: boolean;
@@ -26,6 +27,16 @@ export interface Vulnerability {
 		sink_reached?: boolean;
 		sink_line?: number | string;
 		[key: string]: unknown;
+	};
+	unconfirmed_note?: string;
+	/** What the sandbox attack sent and what the dangerous call received. */
+	evidence?: {
+		payload?: string;
+		payload_source?: 'fixed' | 'llm' | null;
+		sink?: { kind: string; argument: string } | null;
+		attempts?: { n: number; source: string; status: string }[];
+		llm_used?: boolean;
+		reason?: string;
 	};
 }
 
@@ -47,12 +58,14 @@ type RawVulnerability = Partial<Vulnerability> & {
 	remediation?: string | { patch?: string; description?: string };
 	matched_code?: string;
 	verified?: boolean;
-	verification_status?: 'verified' | 'refuted' | 'inconclusive' | 'not_applicable' | 'pending' | 'unconfirmed';
+	verification_status?: 'verified' | 'refuted' | 'inconclusive' | 'not_applicable' | 'not_run' | 'pending' | 'unconfirmed';
 	verification?: Vulnerability['verification'];
 	patch_status?: 'validated_patch' | 'unverified_draft' | 'none';
 	validated_patch?: boolean;
 	range?: Vulnerability['range'];
 	dynamic_trace?: Vulnerability['dynamic_trace'];
+	unconfirmed_note?: string;
+	evidence?: Vulnerability['evidence'];
 };
 
 export function normalizeReviewResponse(data: any, fallbackLanguage: string): ReviewResponse {
@@ -141,16 +154,19 @@ export function normalizeReviewResponse(data: any, fallbackLanguage: string): Re
 			remediation_description:
 				remediationDescription || 'Use the proposed fix and re-run scan to verify remediation.',
 			verified: v.verified,
-			verification_status: v.verification?.verdict ?? v.verification_status ?? (v.verified ? 'verified' : 'unconfirmed'),
+			// The specific status ('unconfirmed', 'not_run') beats the coarser schema verdict.
+			verification_status: v.verification_status ?? v.verification?.verdict ?? (v.verified ? 'verified' : 'pending'),
 			verification: v.verification,
 			patch_status: patchStatus,
 			validated_patch: isValidatedPatch,
 			dynamic_trace: v.dynamic_trace,
+			unconfirmed_note: v.unconfirmed_note,
+			evidence: v.evidence,
 		};
 	});
 
 	return {
-		vulnerabilities,
+		vulnerabilities: rankVulnerabilities(vulnerabilities),
 		language: data?.language ?? fallbackLanguage,
 		analysis_mode: data?.analysis_mode ?? 'unknown',
 		job_id: data?.job_id,

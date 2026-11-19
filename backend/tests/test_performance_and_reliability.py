@@ -112,7 +112,7 @@ class TestPerformanceAndReliability(unittest.TestCase):
         with patch('src.sandbox_verifier.SandboxVerifier.isolation_available', return_value=False):
             res = verifier.verify("def safe(): return 1\n", "safe")
             # With no isolation runtime the verifier must say so rather than guess.
-            self.assertIn(res.get("verification_status"), ["not_applicable", "unconfirmed", "refuted"])
+            self.assertIn(res.get("verification_status"), ["not_applicable", "not_run", "unconfirmed", "refuted"])
             self.assertFalse(res.get("verified", False))
 
         # 2. GitHub API unavailable

@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { Vulnerability } from './client';
+import { VERDICT_LABEL, verdictOf } from './verdict';
 
 export class DiagnosticsManager {
 	private diagnosticsCollection = vscode.languages.createDiagnosticCollection('sageArmor');
@@ -19,14 +20,7 @@ export class DiagnosticsManager {
 				? new vscode.Range(new vscode.Position(0, 0), new vscode.Position(0, 0))
 				: new vscode.Range(new vscode.Position(vuln.line as number, 0), new vscode.Position(vuln.line as number, 1000));
 
-			const verdict = vuln.verification?.verdict ?? vuln.verification_status;
-			const verificationLabel = verdict === 'verified' || vuln.verified
-				? '[Confirmed]'
-				: verdict === 'refuted'
-				? '[Refuted]'
-				: verdict === 'pending'
-				? '[Pending]'
-				: '[Unverified]';
+			const verificationLabel = `[${VERDICT_LABEL[verdictOf(vuln)] ?? 'Pending'}]`;
 
 			const isValidatedPatch = vuln.patch_status === 'validated_patch' || vuln.validated_patch === true;
 			const patchLabel = isValidatedPatch

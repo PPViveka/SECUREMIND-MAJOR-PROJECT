@@ -7,7 +7,7 @@ from typing import Any, Dict, Iterable, List
 
 
 SCHEMA_VERSION = "1.0"
-VERDICTS = {"verified", "refuted", "inconclusive", "not_applicable", "pending"}
+VERDICTS = {"verified", "refuted", "inconclusive", "not_applicable", "not_run", "pending"}
 TIER_A_LANGUAGES = {"python", "py"}
 
 _SEVERITIES = {"critical", "high", "medium", "low", "info"}
@@ -127,6 +127,40 @@ def normalize_finding(finding: Any, *, file_path: str = "", language: str = "") 
         "endLine": location["end"],
     })
     return normalized
+
+
+# Sandbox-confirmed findings first; findings the sandbox attacked without success last.
+_VERIFICATION_ORDER = {
+    "verified": 0,
+    "inconclusive": 1,
+    "pending": 2, "not_run": 2, "not_applicable": 2, "unverified": 2,
+    "unconfirmed": 3,
+    "refuted": 4,
+}
+_SEVERITY_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
+
+
+def verification_rank(finding: Dict[str, Any]) -> int:
+    if not isinstance(finding, dict):
+        return 2
+    if finding.get("verified") is True:
+        return 0
+    status = finding.get("verification_status")
+    if status not in _VERIFICATION_ORDER:
+        verification = finding.get("verification")
+        status = verification.get("verdict") if isinstance(verification, dict) else None
+    return _VERIFICATION_ORDER.get(status, 2)
+
+
+def rank_findings(findings: Iterable[Any]) -> List[Any]:
+    """Stable sort: verification outcome first, then severity. Never drops a finding."""
+    return sorted(
+        list(findings or []),
+        key=lambda f: (
+            verification_rank(f),
+            _SEVERITY_ORDER.get(str(f.get("severity", "")).lower(), 5) if isinstance(f, dict) else 5,
+        ),
+    )
 
 
 def normalize_findings(findings: Iterable[Any], *, file_path: str = "", language: str = "") -> List[Dict[str, Any]]:

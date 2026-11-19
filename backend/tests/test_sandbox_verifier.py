@@ -262,7 +262,8 @@ class TestSandboxVerifier(unittest.TestCase):
                         "    cursor.execute('SELECT * FROM t WHERE val=' + token)\n"
                     )
                     res = prod_verifier.verify_vulnerability(code, "leak_check", 4, "SQL Injection")
-                    self.assertEqual(res.status, "not_applicable")
+                    # "Sandbox not run" is reported separately from "not applicable".
+                    self.assertEqual(res.status, "not_run")
                     self.assertFalse(res.verified)
         finally:
             os.environ.pop("SECRET_TEST_TOKEN", None)

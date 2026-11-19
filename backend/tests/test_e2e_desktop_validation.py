@@ -46,7 +46,7 @@ class TestEndToEndDesktopValidation(unittest.TestCase):
         self.assertIn('line', vuln)
         self.assertEqual(vuln['line'], 4)
         self.assertIn('verification_status', vuln)
-        self.assertIn(vuln['verification_status'], ['unconfirmed', 'verified', 'refuted', 'not_applicable'])
+        self.assertIn(vuln['verification_status'], ['unconfirmed', 'verified', 'refuted', 'not_applicable', 'not_run', 'inconclusive'])
 
         # 3. Patch validation & rejection of malformed patches
         bad_syntax_patch = "def handle_request(user_cmd): os.system( return"

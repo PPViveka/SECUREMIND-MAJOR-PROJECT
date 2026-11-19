@@ -18,6 +18,22 @@ const {
 describe('SageArmor Extension Unit Tests', () => {
 
   describe('Review Response Normalization', () => {
+    test('ranks sandbox-verified findings first and keeps the specific verdict', () => {
+      const result = normalizeReviewResponse({
+        vulnerabilities: [
+          { issue: 'A', severity: 'Critical', line: 1, verification_status: 'unconfirmed', verification: { verdict: 'inconclusive' } },
+          { issue: 'B', severity: 'Low', line: 2, verification_status: 'not_run' },
+          { issue: 'C', severity: 'Low', line: 3, verified: true, verification_status: 'verified',
+            evidence: { payload: "x' OR '1'='1", sink: { kind: 'sql', argument: "SELECT ... x' OR '1'='1" } } },
+        ],
+      }, 'python');
+      assert.deepEqual(result.vulnerabilities.map(v => v.title), ['C', 'B', 'A']);
+      assert.equal(result.vulnerabilities[2].verification_status, 'unconfirmed');
+      assert.equal(result.vulnerabilities[1].verification_status, 'not_run');
+      assert.equal(result.vulnerabilities[0].evidence.sink.kind, 'sql');
+      assert.equal(result.vulnerabilities.length, 3);
+    });
+
     test('normalizes standard vulnerability payload', () => {
       const rawData = {
         vulnerabilities: [

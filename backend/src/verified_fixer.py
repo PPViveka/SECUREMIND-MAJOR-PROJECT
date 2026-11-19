@@ -175,7 +175,8 @@ def gate_b_differential_exploit(
         return False, "skipped", "Gate B SKIPPED: Sandbox isolation runtime is unavailable"
 
     function_name = finding.get("function_name", "")
-    cwe_id = finding.get("cwe_id", "")
+    # The title is enough to pick the exploit class when no CWE is attached.
+    cwe_id = " ".join(str(finding.get(k) or "") for k in ("cwe_id", "cwe", "issue")).strip()
 
     try:
         result = v.verify(
@@ -184,6 +185,8 @@ def gate_b_differential_exploit(
             cwe_id=cwe_id,
         )
         status = result.get("verification_status")
+        if status in {"not_applicable", "not_run"}:
+            return False, "skipped", f"Gate B SKIPPED: exploit re-test {status.replace('_', ' ')}"
         sink_reached = result.get("dynamic_trace", {}).get("sink_reached", False)
         passed = (status in {"unconfirmed", "refuted"}) and not sink_reached
         gate_st = "pass" if passed else "fail"

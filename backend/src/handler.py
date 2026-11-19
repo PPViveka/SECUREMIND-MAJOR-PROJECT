@@ -8,7 +8,7 @@ import uuid
 import requests
 from typing import Any, Dict, List, Optional, Tuple
 from datetime import datetime, timezone
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 from dotenv import load_dotenv
 import boto3
 from .prompt_builder import build_security_prompt
@@ -33,7 +33,7 @@ from .repo_selective_scan import _is_allowed_repo_url
 from .sast_scanner import SASTScanner
 from .autofix_engine import start_autofix_job
 from .autofix_prompt import build_autofix_prompt
-from .finding_schema import anchor_findings, normalize_findings
+from .finding_schema import anchor_findings, normalize_findings, rank_findings
 from .finding_schema import SCHEMA_VERSION
 from .llm_provider import create_provider, redact_secrets
 from .job_manager import (
@@ -864,7 +864,95 @@ def _execute_deep_pipeline_sync(
             if not any(c.get("finding_id") == init_f.get("finding_id") for c in combined):
                 combined.append(init_f)
 
-    return normalize_findings(combined, language=language)
+    return rank_findings(normalize_findings(combined, language=language))
+
+
+_REPO_FULL_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+
+
+def _fetch_pr_python_files(repo_full_name, pr_number, head_sha=""):
+    """
+    Full contents of the Python files a PR changes, at the PR's head commit. The diff alone
+    cannot be executed, so the sandbox gate needs the real files. Returns [(path, source)].
+    """
+    if not (repo_full_name and _REPO_FULL_NAME_RE.match(str(repo_full_name)) and str(pr_number).isdigit()):
+        return []
+    if any(part in (".", "..") for part in str(repo_full_name).split("/")):
+        return []
+    max_files = max(0, int(os.getenv("SAGE_ARMOR_PR_MAX_PY_FILES", "10")))
+    headers = {"Accept": "application/vnd.github+json"}
+    if os.getenv("GITHUB_TOKEN"):
+        headers["Authorization"] = f"token {os.getenv('GITHUB_TOKEN')}"
+    api = f"https://api.github.com/repos/{repo_full_name}"
+    try:
+        listing_resp = requests.get(f"{api}/pulls/{int(pr_number)}/files?per_page=100", headers=headers,
+                                    allow_redirects=False, timeout=15)
+        listing = listing_resp.json() if listing_resp.status_code == 200 else []
+    except Exception as exc:
+        _safe_log(f"[handler] Could not list PR files: {exc}")
+        return []
+    if not isinstance(listing, list):
+        return []
+    files = []
+    ref = f"?ref={quote(str(head_sha), safe='')}" if head_sha and re.fullmatch(r"[0-9a-fA-F]{7,64}", str(head_sha)) else ""
+    for item in listing:
+        if len(files) >= max_files:
+            break
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("filename") or "")
+        if not name.endswith(".py") or item.get("status") == "removed" or ".." in name.split("/"):
+            continue
+        try:
+            raw = requests.get(f"{api}/contents/{quote(name)}{ref}",
+                               headers={**headers, "Accept": "application/vnd.github.v3.raw"},
+                               allow_redirects=False, timeout=15)
+        except Exception as exc:
+            _safe_log(f"[handler] Could not fetch {name}: {exc}")
+            continue
+        text = raw.text if raw.status_code == 200 else None
+        if isinstance(text, str) and text.strip() and len(text.encode("utf-8")) <= _max_code_size():
+            files.append((name, text))
+    return files
+
+
+def _strip_python_from_diff(diff_text):
+    """Drop the Python files' sections from a unified diff (they are scanned as whole files)."""
+    blocks = re.split(r"(?m)^(?=diff --git )", diff_text or "")
+    kept = [b for b in blocks if not re.match(r"diff --git a/\S+\.py b/\S+\.py", b)]
+    return "".join(kept)
+
+
+def _review_pr_python_files(pr_python_files, router_mode, flags):
+    """Run the full pipeline, sandbox gate included, on each changed Python file."""
+    findings = []
+    mode = router_mode if router_mode in {'rules-only', 'balanced', 'thorough'} else 'balanced'
+    for path, source in pr_python_files:
+        try:
+            file_findings = _execute_deep_pipeline_sync(source, 'python', mode, flags)
+        except Exception as exc:
+            _safe_log(f"[handler] PR file scan failed for {path}: {exc}")
+            continue
+        for finding in file_findings:
+            finding["file"] = path
+            finding["file_path"] = path
+        findings.extend(file_findings)
+    return findings
+
+
+def _post_pr_findings(body, repo_full_name, pr_number, vulnerabilities):
+    try:
+        post_pr_review(
+            repo_full_name,
+            pr_number,
+            vulnerabilities,
+            provider=os.getenv('LLM_PROVIDER') or os.getenv('MODEL_PROVIDER') or 'NVIDIA NIM',
+            model=os.getenv('LLM_MODEL') or os.getenv('BEDROCK_MODEL_ID') or 'meta/llama3-8b-instruct',
+            changed_files=body.get('changed_files'),
+        )
+    except Exception as comment_err:
+        # Never block the response if commenting fails
+        _safe_log(f"[handler] PR comment failed (non-fatal): {str(comment_err)}")
 
 
 def review_code(event, context):
@@ -931,20 +1019,39 @@ def review_code(event, context):
             # Store PR metadata for auto-commenting after analysis
             repo_full_name = body.get('repository', {}).get('full_name', '')
             pr_number = body['pull_request'].get('number')
+
+            # Changed Python files are scanned whole so the sandbox gate can run them;
+            # the diff keeps only the other files.
+            head_sha = (body['pull_request'].get('head') or {}).get('sha', '')
+            pr_python_files = _fetch_pr_python_files(repo_full_name, pr_number, head_sha)
+            if pr_python_files:
+                code_snippet = _strip_python_from_diff(code_snippet)
                 
         else:
             # 2. Direct code snippet testing (from Frontend Dashboard)
             code_snippet = body.get('code', '')
             repo_full_name = None
             pr_number = None
-            
-        if not code_snippet:
+            pr_python_files = []
+
+        if not code_snippet and not pr_python_files:
             return _review_response(400, {"error": "No code snippet provided."})
         if len(code_snippet.encode("utf-8")) > _max_code_size():
             return _review_response(413, {"error": "Code snippet exceeds the configured size limit."})
 
         router_mode = body.get('router_mode', body.get('mode', 'balanced'))
         flags = _get_feature_flags(body)
+
+        pr_python_findings = _review_pr_python_files(pr_python_files, router_mode, flags) if pr_python_files else []
+        if pr_python_files and not code_snippet.strip():
+            analysis_result = {
+                "vulnerabilities": rank_findings(pr_python_findings),
+                "analysis_mode": "pr-python-verified",
+                "telemetry": {"pr_python_files": len(pr_python_files)},
+            }
+            if repo_full_name and pr_number:
+                _post_pr_findings(body, repo_full_name, pr_number, analysis_result["vulnerabilities"])
+            return _review_response(200, analysis_result)
 
         # Asynchronous verification request
         if body.get('async_verify') or body.get('async'):
@@ -1198,7 +1305,7 @@ def review_code(event, context):
                         combined_vulns.append(v)
 
                 # Verified findings rank before unconfirmed findings
-                combined_vulns.sort(key=lambda x: (0 if x.get("verified") else 1))
+                combined_vulns = rank_findings(combined_vulns)
 
                 analysis_result['vulnerabilities'] = combined_vulns
                 analysis_result['telemetry'] = telemetry
@@ -1217,25 +1324,17 @@ def review_code(event, context):
             if not duplicate:
                 response_vulnerabilities.append(finding)
 
-        analysis_result['vulnerabilities'] = normalize_findings(
+        response_vulnerabilities.extend(pr_python_findings)
+
+        # Sandbox-confirmed findings first, unconfirmed last; nothing is dropped.
+        analysis_result['vulnerabilities'] = rank_findings(normalize_findings(
             response_vulnerabilities,
             language=language,
-        )
+        ))
 
         # Fire-and-forget: post findings back to GitHub PR (webhook path only)
         if is_webhook and repo_full_name and pr_number:
-            try:
-                post_pr_review(
-                    repo_full_name,
-                    pr_number,
-                    analysis_result.get('vulnerabilities', []),
-                    provider=os.getenv('LLM_PROVIDER') or os.getenv('MODEL_PROVIDER') or 'NVIDIA NIM',
-                    model=os.getenv('LLM_MODEL') or os.getenv('BEDROCK_MODEL_ID') or 'meta/llama3-8b-instruct',
-                    changed_files=body.get('changed_files'),
-                )
-            except Exception as comment_err:
-                # Never block the response if commenting fails
-                _safe_log(f"[handler] PR comment failed (non-fatal): {str(comment_err)}")
+            _post_pr_findings(body, repo_full_name, pr_number, analysis_result.get('vulnerabilities', []))
 
         return _review_response(200, analysis_result)
     except Exception as e:
